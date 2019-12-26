@@ -17,7 +17,7 @@
 	along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 /*
-	This application turns VESC into constant force winch controller.
+	This application turns VESC into paragliding winch controller.
 	Some progress here: https://www.youtube.com/watch?v=KoNegc4SzxY
 
 	To play with model winch, send terminal commands 'example_conf' 
@@ -770,7 +770,7 @@ inline static bool is_int_out_of_limits(const char *name, const char *units,
 	if (val >= min && val <= max)
 		return false;
 
-	commands_printf("%s: %s %s: %d%s is out of limits [%d, %d] %s",
+	commands_printf("%s: %s %s: %d %s is out of limits [%d, %d] %s",
 					state_str(state), limits_w1, name, val, units, min, max, limits_w2);
 	return true;
 }
@@ -781,7 +781,7 @@ inline static bool is_float_out_of_limits(const char *name, const char *units,
 	if (val >= min && val <= max)
 		return false;
 
-	commands_printf("%s: %s %s: %.5f%s is out of limits [%.5f, %.5f] %s",
+	commands_printf("%s: %s %s: %.5f %s is out of limits [%.5f, %.5f] %s",
 					state_str(state), limits_w1, name, (double)val, units, (double)min, (double)max, limits_w2);
 	return true;
 }
@@ -792,7 +792,7 @@ inline static bool is_pull_out_of_limits(const char *name,
 	if (amps >= min && amps <= max)
 		return false;
 
-	commands_printf("%s: %s %s: %.1fA (%.2fKg) is out of limits [%.1fA (%.2fKg), %.1fA (%.2fKg)] %s",
+	commands_printf("%s: %s %s: %.1fA (%.2f Kg) is out of limits [%.1fA (%.2f Kg), %.1fA (%.2f Kg)] %s",
 					state_str(state), limits_w1, name,
 					(double)amps, (double)(amps / config.kg_to_amps),
 					(double)min, (double)(min / config.kg_to_amps),
@@ -846,6 +846,8 @@ static bool is_config_out_of_limits(const skypuff_config *conf)
 								  min_config.kg_to_amps, max_config.kg_to_amps) ||
 		   is_float_out_of_limits("amps_per_sec", "A/Sec", conf->amps_per_sec,
 								  min_config.amps_per_sec, max_config.amps_per_sec) ||
+		   is_distance_out_of_limits("rope_length", conf->rope_length,
+									 min_config.rope_length, max_config.rope_length) ||
 		   is_distance_out_of_limits("braking_length", conf->braking_length,
 									 min_config.braking_length, max_config.braking_length) ||
 		   is_distance_out_of_limits("passive_braking_length", conf->passive_braking_length,
@@ -1055,45 +1057,48 @@ inline static void manual_slow_back(const int cur_tac, const float cur_erpm)
 }
 
 // Example conf of my winch model: https://youtu.be/KoNegc4SzxY?t=6
-static void set_example_conf(void)
+static void set_example_conf(skypuff_config *cfg)
 {
 	// Some example ranges
-	set_config.braking_length = meters_to_tac_steps(1);
-	set_config.passive_braking_length = meters_to_tac_steps(0.5);
-	set_config.overwinding = meters_to_tac_steps(0.1);
-	set_config.rewinding_trigger_length = meters_to_tac_steps(0.2);
-	set_config.unwinding_trigger_length = meters_to_tac_steps(0.05);
-	set_config.slowing_length = meters_to_tac_steps(3);
+	cfg->rope_length = meters_to_tac_steps(50);
+	cfg->braking_length = meters_to_tac_steps(1);
+	cfg->passive_braking_length = meters_to_tac_steps(0.5);
+	cfg->overwinding = meters_to_tac_steps(0.1);
+	cfg->rewinding_trigger_length = meters_to_tac_steps(0.2);
+	cfg->unwinding_trigger_length = meters_to_tac_steps(0.05);
+	cfg->slowing_length = meters_to_tac_steps(3);
 
 	// Slow speeds
-	set_config.slow_erpm = ms_to_erpm(1);
-	set_config.manual_slow_erpm = ms_to_erpm(2);
+	cfg->slow_erpm = ms_to_erpm(1);
+	cfg->manual_slow_erpm = ms_to_erpm(2);
 
 	// Forces
-	set_config.kg_to_amps = 7;   // 7 Amps for 1Kg force
-	set_config.amps_per_sec = 2; // Change forces slowly
-	set_config.brake_current = 0.3 * set_config.kg_to_amps;
-	set_config.manual_brake_current = 1 * set_config.kg_to_amps;
-	set_config.unwinding_current = 0.3 * set_config.kg_to_amps;
-	set_config.rewinding_current = 0.5 * set_config.kg_to_amps;
-	set_config.slow_max_current = 0.4 * set_config.kg_to_amps;
-	set_config.manual_slow_max_current = 0.4 * set_config.kg_to_amps;
-	set_config.manual_slow_speed_up_current = 0.3 * set_config.kg_to_amps;
+	cfg->kg_to_amps = 7;   // 7 Amps for 1Kg force
+	cfg->amps_per_sec = 2; // Change forces slowly
+	cfg->brake_current = 0.3 * set_config.kg_to_amps;
+	cfg->manual_brake_current = 1 * set_config.kg_to_amps;
+	cfg->unwinding_current = 0.3 * set_config.kg_to_amps;
+	cfg->rewinding_current = 0.5 * set_config.kg_to_amps;
+	cfg->slow_max_current = 0.4 * set_config.kg_to_amps;
+	cfg->manual_slow_max_current = 0.4 * set_config.kg_to_amps;
+	cfg->manual_slow_speed_up_current = 0.3 * set_config.kg_to_amps;
 
 	// Pull settings
-	set_config.pull_current = 0.5 * set_config.kg_to_amps;
-	set_config.pre_pull_k = 30 / 100.0;
-	set_config.takeoff_pull_k = 60 / 100.0;
-	set_config.fast_pull_k = 120 / 100.0;
-	set_config.takeoff_trigger_length = meters_to_tac_steps(0.1);
-	set_config.pre_pull_timeout = 2 * 1000;
-	set_config.takeoff_period = 5 * 1000;
+	cfg->pull_current = 0.5 * set_config.kg_to_amps;
+	cfg->pre_pull_k = 30 / 100.0;
+	cfg->takeoff_pull_k = 60 / 100.0;
+	cfg->fast_pull_k = 120 / 100.0;
+	cfg->takeoff_trigger_length = meters_to_tac_steps(0.1);
+	cfg->pre_pull_timeout = 2 * 1000;
+	cfg->takeoff_period = 5 * 1000;
 }
 
 // Called when the custom application is started. Start our
 // threads here and set up callbacks.
 void app_custom_start(void)
 {
+	commands_printf("app_skypuff started");
+
 	// Reset tachometer on app start to prevent unwinding to zero
 	mc_interface_get_tachometer_value(true);
 
@@ -1103,10 +1108,10 @@ void app_custom_start(void)
 	prev_printed_tac = INT_MIN / 2;
 	alive_until = 0;
 
-	state = UNINITIALIZED;
-	terminal_command = DO_NOTHING;
-	// Smooth motor controll will set last state to released
 	smooth_motor_release();
+
+	state = is_config_out_of_limits(&config) ? UNINITIALIZED : BRAKING;
+	terminal_command = DO_NOTHING;
 
 	stop_now = false;
 
@@ -1141,8 +1146,6 @@ void app_custom_start(void)
 		"Debug smooth motor control.",
 		"<release/brake/current/speed> [current/erpm]", terminal_smooth);
 #endif
-
-	commands_printf("app_skypuff started");
 
 	// Run control loop thread
 	chThdCreateStatic(my_thread_wa, sizeof(my_thread_wa), NORMALPRIO, my_thread, NULL);
@@ -1287,28 +1290,9 @@ inline static void state_switch(const int cur_tac, const int abs_tac)
 	switch (state)
 	{
 	case UNINITIALIZED:
-		// Rarely check if we have correct configuration and tac set to brake position
-		if (i - prev_print > long_print_delay)
-		{
-			if (is_config_out_of_limits(&config))
-			{
-				LED_RED_ON();
-				prev_print = i;
-				break;
-			}
-
-			// Can't exit from UNITIALIZED to winding or pulling states
-			// Only safe braking states
-			if (abs_tac < config.braking_length)
-			{
-				LED_RED_OFF();
-				brake(cur_tac);
-				break;
-			}
-
-			LED_RED_ON();
-			print_position_periodically(cur_tac, long_print_delay, ", -- Out of safe braking zone!");
-		}
+		// Only correct SET_CONF will move us from here
+		print_position_periodically(cur_tac, long_print_delay,
+									abs_tac > config.braking_length ? ", -- Out of safe braking zone!" : "");
 		break;
 	case BRAKING:
 		// We are in the breaking + passive zone?
@@ -1712,6 +1696,7 @@ inline static void print_conf(const int cur_tac)
 	commands_printf("SkyPUFF configuration v%d:", config_version);
 	commands_printf("  amperes per 1kg force: %.1fAKg", (double)config.kg_to_amps);
 	commands_printf("  force changing speed: %.2fKg/sec (%.1fA/sec)", (double)(config.amps_per_sec / config.kg_to_amps), (double)config.amps_per_sec);
+	commands_printf("  rope length: %.2fm (%d steps)", (double)tac_steps_to_meters(config.rope_length), config.rope_length);
 	commands_printf("  braking range: %.2fm (%d steps)", (double)tac_steps_to_meters(config.braking_length), config.braking_length);
 	commands_printf("  passive braking range: %.2fm (%d steps)", (double)tac_steps_to_meters(config.passive_braking_length), config.passive_braking_length);
 	commands_printf("  overwinding: %.2fm (%d steps)", (double)tac_steps_to_meters(config.overwinding), config.overwinding);
@@ -1922,8 +1907,19 @@ inline static void terminal_command_switch(const int cur_tac, const int abs_tac)
 			if (is_config_out_of_limits(&set_config))
 				break;
 
+			// Use braking_length from received config
+			if (abs_tac > set_config.braking_length)
+			{
+				commands_printf("%s: -- Can't set configuration when position is out of braking zone", state_str(state));
+				break;
+			}
+
 			config = set_config;
 			commands_printf("%s: -- Configuration set", state_str(state));
+
+			if (state == UNINITIALIZED)
+				brake(cur_tac);
+
 			break;
 		default:
 			commands_printf("%s: -- Configuration could be updated in UNITIALIZED or BRAKING states",
@@ -2066,7 +2062,7 @@ static void terminal_set_example_conf(int argc, const char **argv)
 	(void)argc;
 	(void)argv;
 
-	set_example_conf();
+	set_example_conf(&set_config);
 	terminal_command = SET_CONF;
 }
 
