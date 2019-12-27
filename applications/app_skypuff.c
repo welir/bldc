@@ -16,31 +16,6 @@
 	You should have received a copy of the GNU General Public License
 	along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
-/*
-	This application turns VESC into paragliding winch controller.
-	Some progress here: https://www.youtube.com/watch?v=KoNegc4SzxY
-
-	To play with model winch, send terminal commands 'example_conf' 
-	and 'alive 3000000' to set long communication timeout.
-
-	Skypuff can't use VESC timeout mechanism because of smooth pull release.
-
-	Terminal output format is unified to simplify parsing on the UI side.
-
-	Each print consist of current state and comma delimeted messages.
-
-	State: type message, type message, ...
-
-	Types:
-	  'pos': current position
-	  'pull': pulling or breaking force
-	  'speed': current speed
-	  '--': warning text until end of printstatic void terminal_set_pull_force(int argc, const char **argv);
-
-	Examples:
-		UNITIALIZED: -- CONFIG OUT OF LIMITS -- Braking current 0A is out of limits (0.5, 20)
-		BRAKING: pos 34.3m (3432 steps), pull 2.3Kg (6.2A)
-*/
 
 #include "app.h"
 #include "ch.h"
@@ -62,20 +37,36 @@
 #include <string.h>
 #include <ctype.h>
 
-// Uncomment to debug Smooth Motor Control from terminal
-//#define DEBUG_SMOOTH_MOTOR
+/*
+	This application turns VESC into paragliding winch controller.
+	Some progress here: https://www.youtube.com/watch?v=KoNegc4SzxY
 
-// Must be increased on skypuff_config struct update
-// Don't forget to update HW limits structs
-static const int config_version = 1;
+	To play with model winch, send terminal commands 'example_conf' 
+	and 'alive 3000000' to set long communication timeout.
 
-// Delays between pereodically prints of state, position and forces
-static const int short_print_delay = 500; // 0.5s, measured in control loop counts
-static const int long_print_delay = 3000; // 3s
-// Between smooth motor adjustments
+	Skypuff can't use VESC timeout because of smooth pull release mechanism.
+
+	Terminal output format is unified to simplify UI side parsing.
+
+	Each print consist of current state and comma delimeted messages.
+
+	State: type message, type message, ...
+
+	Types:
+	  'pos': current position
+	  'pull': pulling or breaking force
+	  'speed': current speed
+	  '--': warning text until end of line 
+
+	Examples:
+		UNITIALIZED: -- CONFIG OUT OF LIMITS -- Braking current 0.0A is out of limits (0.5, 20.0)
+		BRAKING: pos 34.3m (3432 steps), pull 2.30Kg (6.2A)
+*/
+
+static const int short_print_delay = 500;	 // 0.5s, measured in control loop counts
+static const int long_print_delay = 3000;	 // 3s
 static const int smooth_max_step_delay = 100; // 0.1s
 
-// Terminal warnings about bad settings
 const char *limits_wrn = "-- CONFIG OUT OF LIMITS --";
 
 // Threads
@@ -93,42 +84,38 @@ static void terminal_set_pull_force(int argc, const char **argv);
 static void terminal_smooth(int argc, const char **argv);
 #endif
 
-//static void terminal_set_conf(int argc, const char **argv);
-//static void terminal_get_conf(int argc, const char **argv);
-
 // Private variables
 static volatile bool stop_now = true;
 static volatile bool is_running = false;
 static const volatile mc_configuration *mc_conf;
-static int prev_abs_tac = 0;
-static float prev_erpm = 0;
-static int loop_step;					   // Global control loop counter
-static int prev_print = INT_MIN / 2;	   // Loop counter value of the last state print
-static int prev_printed_tac = INT_MIN / 2; // Do not print the same position
-static int alive_until = 0;				   // In good communication we trust until (i < alive_until)
-static int pre_pull_start_time;			   // Save loop counter here when pre pull begins
-static int takeoff_pull_start_time;		   // Save loop counter here when takeoff pull begins
-static float terminal_pull_kg;			   // Pull force to set from terminal thread
-static volatile int alive_inc = 0;		   // Communication timeout increment from terminal thread
+static int loop_step;		   // Control loop step counter
+static int prev_abs_tac;	   // Detect movements
+static float prev_erpm;		   // Detect change of rotating direction
+static int prev_print;		   // Loop counter value of the last state print
+static int prev_printed_tac;   // Do not print the same position
+static int alive_until;		   // In good communication we trust until (i < alive_until)
+static int state_start_time;   // Save loop counter here when pre pull or takeoff pull begins
+static float terminal_pull_kg; // Pull force to set from terminal thread
+static volatile int alive_inc; // Communication timeout increment from terminal thread
 
 // Winch state machine
 typedef enum
 {
-	UNINITIALIZED,			   // Released motor, until some valid configuration set
+	UNINITIALIZED,			   // Released motor until some valid configuration set in the braking zone
 	BRAKING,				   // Braking zone near take off
-	SLOWING,				   // Next to braking zone for slowing down motor until config.slow_erpm
+	SLOWING,				   // Next to braking zone to slow down motor speed until config.slow_erpm
 	SLOW,					   // Constant speed to reach zero
 	UNWINDING,				   // Low force rope tension during step up or unwinder mode
-	REWINDING,				   // Higher force fast rope winding to take off for unwinder mode
-	PRE_PULL,				   // Pull while pilot stays on the ground
-	TAKEOFF_PULL,			   // Pull to take off
+	REWINDING,				   // Higher force fast rope winding to zero for unwinder mode
+	PRE_PULL,				   // Pull pilot while stays on the ground
+	TAKEOFF_PULL,			   // Takeoff pull
 	PULL,					   // Nominal pull
-	FAST_PULL,				   // Pull a bit above nominal pull
+	FAST_PULL,				   // Fast pull
 	MANUAL_BRAKING,			   // Braking caused by operator or communication timeout
-	MANUAL_SLOW_SPEED_UP,	  // Speed up until manual constant speed to reach zero direction
-	MANUAL_SLOW,			   // Constant speed to reach zero from any position
-	MANUAL_SLOW_BACK_SPEED_UP, // Speed up back until manual constant speed from zero direction
-	MANUAL_SLOW_BACK,		   // Constant speed from zero
+	MANUAL_SLOW_SPEED_UP,	  // Speed up until manual constant speed to reach zero
+	MANUAL_SLOW,			   // Constant speed mode to reach zero from any position
+	MANUAL_SLOW_BACK_SPEED_UP, // Speed up back from zero until manual constant speed
+	MANUAL_SLOW_BACK,		   // Constant speed mode from zero direction
 #ifdef DEBUG_SMOOTH_MOTOR
 	MANUAL_DEBUG_SMOOTH, // Debug smooth motor movements with 'smooth' terminal commands
 #endif
@@ -136,7 +123,7 @@ typedef enum
 
 static skypuff_state state;
 
-// Commands from terminal thread
+// Terminal thread commands for control loop thread
 typedef enum
 {
 	DO_NOTHING,
@@ -157,7 +144,7 @@ typedef enum
 	SET_CONF,
 } skypuff_terminal_command;
 
-static volatile skypuff_terminal_command terminal_command = DO_NOTHING;
+static volatile skypuff_terminal_command terminal_command;
 
 /*
 	Smooth Motor Control
@@ -174,6 +161,10 @@ static volatile skypuff_terminal_command terminal_command = DO_NOTHING;
 
 	Always brake instantly if braking zone.
 */
+
+// Uncomment to debug Smooth Motor Control from terminal
+//#define DEBUG_SMOOTH_MOTOR
+
 typedef enum
 {
 	MOTOR_RELEASED,
@@ -199,42 +190,46 @@ static smooth_motor_state terminal_motor_state;
 static int next_smooth_motor_adjustment; // Loop count for next motor adjustment
 static int prev_smooth_motor_adjustment; // Loop count of previous motor adjustment
 
+// Must be increased on skypuff_config struct update
+// Don't forget to update HW limits structs and checking functions
+static const int config_version = 1;
+
 typedef struct
 {
-	float kg_to_amps;					// Winch force coefficient
-	float amps_per_sec;					// Force change speed
+	float kg_to_amps;					// Winch drive force coefficient
+	float amps_per_sec;					// Force change speed for smooth pull release or apply
 	int rope_length;					// Winch rope length (used by interface only)
-	int braking_length;					// Tachometer range for braking zone
-	int passive_braking_length;			// Increase braking_length on passive_braking_length from BRAKING
-	int overwinding;					// Tachometer range to overwind braking zone
-	int slowing_length;					// Range after braking zone to release motor and slow down until slow_erpm
+	int braking_length;					// Tachometer range of braking zone
+	int passive_braking_length;			// Increased braking_length for passive winch mode when car drive 150m from takeoff
+	int overwinding;					// Tachometer range to overwind braking zone when going zero
+	int slowing_length;					// Range after braking zone to slow down motor speed when unwinding to zero
 	float slow_erpm;					// Constant erpm for slow mode
-	int rewinding_trigger_length;		// Fast rewinding after going back range
-	int unwinding_trigger_length;		// Back to unwinding from rewinding if this range unwinded
-	float pull_current;					// Winch nominal pulling force
-	float pre_pull_k;					// pre_pull_k * pull_current = pull current when pilots stays ready
-	float takeoff_pull_k;				// takeoff_pull_k * pull_current = pull current for take off
-	float fast_pull_k;					// fast_pull_k * pull_current = fast pull current for high altitude
-	int takeoff_trigger_length;			// Minimal movement for switching to start pull
+	int rewinding_trigger_length;		// Switch to fast rewinding state after going back this length
+	int unwinding_trigger_length;		// Back to unwinding from rewinding if this range unwinded again
+	float pull_current;					// Winch normal pull force, usually pilot weight
+	float pre_pull_k;					// pre_pull_k * pull_current = pull current when pilots stays on the ground
+	float takeoff_pull_k;				// takeoff_pull_k * pull_current = pull current to takeoff
+	float fast_pull_k;					// fast_pull_k * pull_current = pull current to get altitude fast
+	int takeoff_trigger_length;			// Minimal PRE_PULL movement for switching to TAKEOFF_PULL stte
 	int pre_pull_timeout;				// Timeout before saving position after pre pull
-	int takeoff_period;					// Time of start pulling force
-	float brake_current;				// Braking force
-	float manual_brake_current;			// Manual braking force, could be high to charge battery driving away
+	int takeoff_period;					// Time for TAKEOFF_PULL and then switch to normal PULL
+	float brake_current;				// Braking zone brake force
+	float manual_brake_current;			// Manual braking force, could be set high when charge battery driving away
 	float unwinding_current;			// Unwinding force
 	float rewinding_current;			// Rewinding force
-	float slow_max_current;				// On exceed max current go braking or unwinding
-	float manual_slow_max_current;		// On exceed max current go manual braking
-	float manual_slow_speed_up_current; // Speed up current until max_slow_erpm
+	float slow_max_current;				// On exceed this current go braking or unwinding
+	float manual_slow_max_current;		// On exceed this current go manual braking
+	float manual_slow_speed_up_current; // Speed up current for manual constant speed states
 	float manual_slow_erpm;				// Constant speed for manual rotation
 } skypuff_config;
 
 static skypuff_config config;
-static skypuff_config set_config; // to update from terminal thread;
+static skypuff_config set_config; // update from terminal thread;
 
 /*
 	Skypuff relies on system drive settings to calculate rope meters
 	This struct is necessary for limits only,
-	actual values stored in mc_configuration struc.
+	actual values stored in mc_configuration struct.
 */
 typedef struct
 {
@@ -246,13 +241,13 @@ typedef struct
 static const skypuff_drive_limits min_drive_limits = {
 	.motor_poles = 2,
 	.wheel_diameter = 0.01, // In meters
-	.gear_ratio = 0.05,
+	.gear_ratio = 0.05,		// Motor turns for 1 spool turn
 };
 
 static const skypuff_drive_limits max_drive_limits = {
 	.motor_poles = 60,
 	.wheel_diameter = 2,
-	.gear_ratio = 20, // Motor turns for 1 wheel turn
+	.gear_ratio = 20,
 };
 
 // Do we actually need meters and meters per second for limits?
@@ -312,8 +307,7 @@ static const skypuff_config max_config = {
 	.manual_slow_erpm = 8000,
 };
 
-inline static const char *
-state_str(const skypuff_state s)
+inline static const char *state_str(const skypuff_state s)
 {
 	switch (s)
 	{
@@ -356,6 +350,23 @@ state_str(const skypuff_state s)
 	}
 }
 
+inline static const char *motor_mode_str(smooth_motor_mode m)
+{
+	switch (m)
+	{
+	case MOTOR_RELEASED:
+		return "MOTOR_RELEASED";
+	case MOTOR_BRAKING:
+		return "MOTOR_BRAKING";
+	case MOTOR_CURRENT:
+		return "MOTOR_CURRENT";
+	case MOTOR_SPEED:
+		return "MOTOR_SPEED";
+	default:
+		return "MOTOR_UNKNOWN";
+	}
+}
+
 // Units converting calculations
 inline static float meters_per_rev(void)
 {
@@ -391,23 +402,6 @@ inline static float erpm_to_ms(float erpm)
 	float rps = erps / (mc_conf->si_motor_poles / 2);
 
 	return rps * meters_per_rev();
-}
-
-inline static const char *motor_mode_str(smooth_motor_mode m)
-{
-	switch (m)
-	{
-	case MOTOR_RELEASED:
-		return "MOTOR_RELEASED";
-	case MOTOR_BRAKING:
-		return "MOTOR_BRAKING";
-	case MOTOR_CURRENT:
-		return "MOTOR_CURRENT";
-	case MOTOR_SPEED:
-		return "MOTOR_SPEED";
-	default:
-		return "MOTOR_UNKNOWN";
-	}
 }
 
 #ifdef DEBUG_SMOOTH_MOTOR
@@ -470,6 +464,7 @@ inline static int smooth_motor_prev_adjustment_delay(void)
 {
 	int prev_adjustment_delay = loop_step - prev_smooth_motor_adjustment;
 
+	// Truncate to smooth_max_step_delay if higher
 	if (prev_adjustment_delay > smooth_max_step_delay)
 		prev_adjustment_delay = smooth_max_step_delay;
 
@@ -506,47 +501,46 @@ inline static float smooth_signed_unwinding_by(float c)
 // Returns new current and next adjustment delay
 inline static float smooth_calc_step(const float c1,
 									 const float c2,
-									 const int prev_adjustment_delay, // delay from previous adjustment
+									 const int prev_adjustment_delay,
 									 int *next_delay)
 {
-	// Respect force changing speed and delay from previous force adjustment
+	// Calculate current step respecting force changing speed and delay from previous force adjustment
 	float step = config.amps_per_sec * (float)prev_adjustment_delay / (float)1000.0;
 
 	float c;
 
-	// Target below current?
+	// Target is below current?
 	if (c2 < c1)
 	{
+		// Step down to target
 		c = c1 - step;
 		if (c <= c2)
-			c = c2;
+			c = c2; // Do not jump over
 	}
 	else
 	{
+		// Step up to target
 		c = c1 + step;
 		if (c >= c2)
-			c = c2;
+			c = c2; // Do not jump over
 	}
 
-	// Respect unwinding boundaries
+	// Calculated current is weaker then unwinding?
 	if (smooth_is_between_unwinding(c))
 	{
+		// Target is weaker then unwinding?
 		if (smooth_is_between_unwinding(c2))
-			return c2;
-		else if (c2 < 0)
-			c = -config.unwinding_current;
+			return c2; // Set target instanly
 		else
-			c = config.unwinding_current;
-	}
-	else
-	{
+			// Start smooth adjustments from unwinding with correct sign
+			c = smooth_signed_unwinding_by(c2);
 	}
 
 	*next_delay = smooth_calc_next_delay(c, c2);
 
 	// Prevent extra adjustments
 	if (*next_delay <= 1)
-		*next_delay = 0;
+		*next_delay = 0; // Set target mode instantly
 
 	return c;
 }
@@ -567,12 +561,13 @@ inline static void smooth_motor_adjustment(const int cur_tac, const int abs_tac)
 
 	float step_current;
 	float signed_unwinding_current;
-	int next_delay = 0; // Instant set by default
+	int next_delay = 0; // Set target instantly by default
 
+	// Process all possible motor modes transitions
 	switch (target_motor_state.mode)
 	{
 	case MOTOR_BRAKING:
-		// Braking zone?
+		// Braking zone always instant
 		if (abs_tac <= config.braking_length)
 		{
 #ifdef DEBUG_SMOOTH_MOTOR
@@ -604,7 +599,7 @@ inline static void smooth_motor_adjustment(const int cur_tac, const int abs_tac)
 			next_smooth_motor_adjustment = loop_step + next_delay;
 			break;
 		case MOTOR_CURRENT:
-			// Smoothly decrease current until unwinding current and start braking
+			// Smoothly decrease current until unwinding current and then start braking
 			signed_unwinding_current = smooth_signed_unwinding_by(current_motor_state.param.current);
 
 			step_current = smooth_calc_step(current_motor_state.param.current,
@@ -705,6 +700,7 @@ inline static void smooth_motor_adjustment(const int cur_tac, const int abs_tac)
 	}
 }
 
+// Always instantly
 inline static void smooth_motor_release(void)
 {
 #ifdef DEBUG_SMOOTH_MOTOR
@@ -721,6 +717,7 @@ inline static void smooth_motor_release(void)
 	prev_smooth_motor_adjustment = loop_step;
 }
 
+// Always instantly
 inline static void smooth_motor_speed(const float erpm)
 {
 #ifdef DEBUG_SMOOTH_MOTOR
@@ -763,13 +760,14 @@ inline static void smooth_motor_current(const int cur_tac, const int abs_tac, co
 	smooth_motor_adjustment(cur_tac, abs_tac);
 }
 
+// Helper functions to check limits
 inline static bool is_int_out_of_limits(const char *name, const char *units,
 										const int val, const int min, const int max)
 {
 	if (val >= min && val <= max)
 		return false;
 
-	commands_printf("%s: %s %s: %d %s is out of limits [%d, %d]",
+	commands_printf("%s: %s %s: %d%s is out of limits [%d, %d]",
 					state_str(state), limits_wrn, name, val, units, min, max);
 	return true;
 }
@@ -791,7 +789,7 @@ inline static bool is_pull_out_of_limits(const char *name,
 	if (amps >= min && amps <= max)
 		return false;
 
-	commands_printf("%s: %s %s: %.1fA (%.2f Kg) is out of limits [%.1fA (%.2f Kg), %.1fA (%.2f Kg)]",
+	commands_printf("%s: %s %s: %.1fA (%.2fKg) is out of limits [%.1fA (%.2fKg), %.1fA (%.2fKg)]",
 					state_str(state), limits_wrn, name,
 					(double)amps, (double)(amps / config.kg_to_amps),
 					(double)min, (double)(min / config.kg_to_amps),
@@ -890,7 +888,33 @@ static bool is_config_out_of_limits(const skypuff_config *conf)
 								min_config.takeoff_period, max_config.takeoff_period);
 }
 
-// State setters
+static void store_config_to_eeprom(const skypuff_config *c)
+{
+	mc_interface_release_motor();
+
+	eeprom_var *e = (eeprom_var *)c;
+
+	// Implement this if you need
+	if (sizeof(skypuff_config) % sizeof(eeprom_var))
+	{
+		commands_printf("%s: -- store_config_to_eeprom(): config size %u must be dividable by %u",
+						state_str(state), sizeof(skypuff_config), sizeof(eeprom_var));
+		return;
+	}
+
+	for (unsigned int a = 0; a < sizeof(skypuff_config) / sizeof(eeprom_var); a++)
+		conf_general_store_eeprom_var_custom(e + a, a);
+}
+
+static void read_config_from_eeprom(skypuff_config *c)
+{
+	eeprom_var *e = (eeprom_var *)c;
+
+	for (unsigned int a = 0; a < sizeof(skypuff_config) / sizeof(eeprom_var); a++)
+		conf_general_read_eeprom_var_custom(e + a, a);
+}
+
+// State machine state setters
 inline static void brake_state(const int cur_tac, const skypuff_state new_state, const float current,
 							   const char *additional_msg)
 {
@@ -913,31 +937,6 @@ inline static void brake_state(const int cur_tac, const skypuff_state new_state,
 	timeout_reset();
 }
 
-static void store_config_to_eeprom(const skypuff_config *c)
-{
-	mc_interface_release_motor();
-
-	eeprom_var *e = (eeprom_var *)c;
-
-	if (sizeof(skypuff_config) % sizeof(eeprom_var))
-	{
-		commands_printf("%s: -- store_config_to_eeprom(): config size %u must be dividable by %u",
-						state_str(state), sizeof(skypuff_config), sizeof(eeprom_var));
-		return;
-	}
-
-	for (unsigned int a = 0; a < sizeof(skypuff_config) / sizeof(eeprom_var); a++)
-		conf_general_store_eeprom_var_custom(e + a, a);
-}
-
-static void read_config_from_eeprom(skypuff_config *c)
-{
-	eeprom_var *e = (eeprom_var *)c;
-
-	for (unsigned int a = 0; a < sizeof(skypuff_config) / sizeof(eeprom_var); a++)
-		conf_general_read_eeprom_var_custom(e + a, a);
-}
-
 inline static void brake(const int cur_tac)
 {
 	brake_state(cur_tac, BRAKING, config.brake_current, "");
@@ -955,7 +954,12 @@ inline static void pull_state(const int cur_tac, const float pull_current, const
 	// Detect direction to zero depending on tachometer value
 	float current = cur_tac < 0 ? pull_current : -pull_current;
 
-	state = new_state;
+	// Update pull force sets state again, do not change state_start_time
+	if (state != new_state)
+	{
+		state_start_time = loop_step;
+		state = new_state;
+	}
 
 	prev_print = loop_step;
 	prev_printed_tac = cur_tac;
@@ -984,19 +988,11 @@ inline static void rewinding(const int cur_tac)
 
 inline static void pre_pull(const int cur_tac)
 {
-	// State changed?
-	if (state != PRE_PULL)
-		pre_pull_start_time = loop_step;
-
 	pull_state(cur_tac, config.pre_pull_k * config.pull_current, PRE_PULL, "");
 }
 
 inline static void takeoff_pull(const int cur_tac)
 {
-	// State changed?
-	if (state != TAKEOFF_PULL)
-		takeoff_pull_start_time = loop_step;
-
 	pull_state(cur_tac, config.takeoff_pull_k * config.pull_current, TAKEOFF_PULL, "");
 }
 
@@ -1120,23 +1116,26 @@ void app_custom_start(void)
 {
 	commands_printf("app_skypuff started");
 
-	// Reset tachometer on app start to prevent unwinding to zero
+	// Reset tachometer on app start to prevent instant unwinding to zero
 	mc_interface_get_tachometer_value(true);
 
 	mc_conf = mc_interface_get_configuration();
 
+	// Static variables initial state
 	prev_print = INT_MIN / 2;
 	prev_printed_tac = INT_MIN / 2;
 	alive_until = 0;
+	prev_abs_tac = 0;
+	prev_erpm = 0;
+	prev_print = INT_MIN / 2;
+	prev_printed_tac = INT_MIN / 2;
+	terminal_command = DO_NOTHING;
+	stop_now = false;
 
 	smooth_motor_release();
-
 	read_config_from_eeprom(&config);
 
 	state = is_config_out_of_limits(&config) ? UNINITIALIZED : BRAKING;
-	terminal_command = DO_NOTHING;
-
-	stop_now = false;
 
 	// Terminal commands for the VESC Tool terminal can be registered.
 	terminal_register_command_callback(
@@ -1212,19 +1211,14 @@ static bool brake_or_slowing(const int cur_tac, const int abs_tac)
 		return true;
 	}
 
-	// We are in the slowing range?
+	// Slowing range?
 	if (abs_tac < config.braking_length + config.slowing_length)
 	{
 		float erpm = mc_interface_get_rpm();
+		float abs_erpm = fabs(erpm);
 
-		// Rewinding forward with more then slow speed?
-		if (cur_tac < 0 && erpm > config.slow_erpm)
-		{
-			slowing(cur_tac, erpm);
-			return true;
-		}
-		// Rewinding backward with more then slow speed?
-		else if (cur_tac >= 0 && erpm < -config.slow_erpm)
+		// Fast enough for slowing?
+		if (abs_erpm >= config.slow_erpm)
 		{
 			slowing(cur_tac, erpm);
 			return true;
@@ -1288,6 +1282,7 @@ inline static void brake_or_manual_brake(const int cur_tac, const int abs_tac)
 		manual_brake(cur_tac);
 }
 
+// More prints to tweak slowing zone
 inline static void slowing_or_speed_up_print(const int cur_tac, const float cur_erpm, const float target_erpm)
 {
 	if (loop_step - prev_print > short_print_delay)
@@ -1305,7 +1300,8 @@ inline static void slowing_or_speed_up_print(const int cur_tac, const float cur_
 	}
 }
 
-inline static void state_switch(const int cur_tac, const int abs_tac)
+// Main state machine
+inline static void process_states(const int cur_tac, const int abs_tac)
 {
 	float cur_erpm, abs_erpm;
 	float cur_current, abs_current;
@@ -1481,7 +1477,7 @@ inline static void state_switch(const int cur_tac, const int abs_tac)
 		cur_erpm = mc_interface_get_rpm();
 		abs_erpm = fabs(cur_erpm);
 
-		// Do not rotate in braking zone
+		// Do not speed up in the braking zone
 		if (abs_tac < config.braking_length - config.overwinding)
 		{
 			commands_printf("%s: speed %.1fms (%.0f ERPM) -- Braking zone",
@@ -1556,7 +1552,7 @@ inline static void state_switch(const int cur_tac, const int abs_tac)
 			break;
 		}
 
-		// If current above the limits - brake or unwinding
+		// If current above the limits - brake or manual_brake again
 		if (abs_current > config.manual_slow_max_current)
 		{
 			commands_printf(
@@ -1637,8 +1633,9 @@ inline static void state_switch(const int cur_tac, const int abs_tac)
 		if (brake_or_slowing(cur_tac, abs_tac))
 			break;
 
-		// Enough time for the rope tighten?
-		if (loop_step == pre_pull_start_time + config.pre_pull_timeout)
+		// Enough time to tight the rope?
+		int timeout_step = state_start_time + config.pre_pull_timeout;
+		if (loop_step == timeout_step)
 		{
 			commands_printf("%s: pos %.2fm (%d steps), -- Pre pull %.1fs timeout passed, saving position",
 							state_str(state),
@@ -1647,8 +1644,8 @@ inline static void state_switch(const int cur_tac, const int abs_tac)
 			prev_abs_tac = abs_tac;
 		}
 
-		// Moved enough to takeoff?
-		if (abs(prev_abs_tac - abs_tac) >= config.takeoff_trigger_length)
+		// Timeout passed and moved enough to takeoff?
+		if (loop_step > timeout_step && abs(prev_abs_tac - abs_tac) >= config.takeoff_trigger_length)
 		{
 			commands_printf("%s: pos %.2fm (%d steps), moved %.2fm (%d steps) -- Moving detected",
 							state_str(state),
@@ -1669,8 +1666,8 @@ inline static void state_switch(const int cur_tac, const int abs_tac)
 		if (brake_or_slowing(cur_tac, abs_tac))
 			break;
 
-		//
-		if (loop_step >= takeoff_pull_start_time + config.takeoff_period)
+		// Enough time of weak takeoff pull?
+		if (loop_step >= state_start_time + config.takeoff_period)
 		{
 			commands_printf("%s: pos %.2fm (%d steps), -- Takeoff %.1fs timeout passed",
 							state_str(state),
@@ -1679,19 +1676,10 @@ inline static void state_switch(const int cur_tac, const int abs_tac)
 			pull(cur_tac);
 			break;
 		}
+
 		print_position_periodically(cur_tac, long_print_delay, "");
 		break;
 	case PULL:
-		// No system timeouts on this state
-		if (!(loop_step % 500))
-			timeout_reset();
-
-		// Go breaking or slowing?
-		if (brake_or_slowing(cur_tac, abs_tac))
-			break;
-
-		print_position_periodically(cur_tac, long_print_delay, "");
-		break;
 	case FAST_PULL:
 		// No system timeouts on this state
 		if (!(loop_step % 500))
@@ -1758,7 +1746,7 @@ inline static void print_conf(const int cur_tac)
 	commands_printf("  loop counter: %d, alive until: %d, %s", loop_step, alive_until, loop_step >= alive_until ? "communication timeout" : "no timeout");
 }
 
-inline static void terminal_command_switch(const int cur_tac, const int abs_tac)
+inline static void process_terminal_commands(const int cur_tac, const int abs_tac)
 {
 	// In case of new command during next switch
 	skypuff_terminal_command prev_command = terminal_command;
@@ -1913,7 +1901,7 @@ inline static void terminal_command_switch(const int cur_tac, const int abs_tac)
 			break;
 
 		default:
-			commands_printf("%s: -- PULL could only be set from TAKEOFF_PULL or UNWINDING", state_str(state));
+			commands_printf("%s: -- PULL could only be set from TAKEOFF_PULL or UNWINDING/REWINDING", state_str(state));
 		}
 
 		break;
@@ -1936,6 +1924,7 @@ inline static void terminal_command_switch(const int cur_tac, const int abs_tac)
 		{
 		case UNINITIALIZED:
 		case BRAKING:
+		case MANUAL_BRAKING:
 			if (is_config_out_of_limits(&set_config))
 				break;
 
@@ -1951,12 +1940,13 @@ inline static void terminal_command_switch(const int cur_tac, const int abs_tac)
 
 			commands_printf("%s: -- Configuration set", state_str(state));
 
+			// Forget about UNITIALIZED :)
 			if (state == UNINITIALIZED)
 				brake(cur_tac);
 
 			break;
 		default:
-			commands_printf("%s: -- Configuration could be updated in UNITIALIZED or BRAKING states",
+			commands_printf("%s: -- Configuration could be updated in UNITIALIZED or BRAKING/MANUAL_BRAKING states",
 							state_str(state));
 		}
 
@@ -2004,6 +1994,7 @@ static THD_FUNCTION(my_thread, arg)
 
 	is_running = true;
 
+	// Main control loop
 	for (loop_step = 0;; loop_step++)
 	{
 		// Check if it is time to stop.
@@ -2021,19 +2012,18 @@ static THD_FUNCTION(my_thread, arg)
 		{
 			alive_until = loop_step + alive_inc;
 			alive_inc = 0;
-			// Actually not necessary
-			// commands_printf("%s: time %d, until %d",
-			// 				state_str(state), i, alive_until);
 		}
 
-		// Communication timeout, initialized and not braking zone?
+		// Communication timeout?
+		// Need to be in any braking state if initialized
 		if (loop_step >= alive_until && abs_tac > config.braking_length &&
 			state != UNINITIALIZED && state != MANUAL_BRAKING)
 			manual_brake(cur_tac);
 
-		terminal_command_switch(cur_tac, abs_tac);
-		state_switch(cur_tac, abs_tac);
+		process_terminal_commands(cur_tac, abs_tac);
+		process_states(cur_tac, abs_tac);
 
+		// Time to adjust motor?
 		if (loop_step >= next_smooth_motor_adjustment)
 			smooth_motor_adjustment(cur_tac, abs_tac);
 
@@ -2135,19 +2125,12 @@ static void terminal_set_pull_force(int argc, const char **argv)
 		return;
 	};
 
-	// Better check limits in the terminal_command_switch
-	/*
-	if (kg <= min_pull_kg || kg >= max_pull_kg)
-	{
-		commands_printf("%s: -- Pull force %.1fKg out of limits (%.1f, %.1f)",
-						state_str(state), (double)kg, (double)min_pull_kg, (double)max_pull_kg);
-	}
-	*/
-
+	// Limits will be checked in process_terminal_commands()
 	terminal_pull_kg = kg;
 	terminal_command = SET_PULL_FORCE;
 }
 
+// Helper function to uppercase terminal commands
 inline static void uppercase(char *out, const char *in, const int out_len)
 {
 	int in_len = strlen(in);
