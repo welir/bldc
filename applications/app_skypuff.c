@@ -201,7 +201,6 @@ typedef struct
 	int rope_length;					// Winch rope length (used by interface only)
 	int braking_length;					// Tachometer range of braking zone
 	int passive_braking_length;			// Increase braking_length for passive winches when car drive 150m from takeoff
-	int overwinding;					// Tachometer range to overwind braking zone when going zero
 	int slowing_length;					// Range after braking zone to slow down motor when unwinding to zero
 	float slow_erpm;					// Constant erpm in direction to zero
 	int rewinding_trigger_length;		// Switch to fast rewinding state after going back this length
@@ -257,8 +256,7 @@ static const skypuff_config min_config = {
 	.amps_per_sec = 0.5,
 	.rope_length = 5,
 	.braking_length = 5,
-	.passive_braking_length = 0,
-	.overwinding = 3,
+	.passive_braking_length = 3, // To create trigger length after unwinding
 	.slowing_length = 3,
 	.slow_erpm = 100,
 	.rewinding_trigger_length = 10,
@@ -286,7 +284,6 @@ static const skypuff_config max_config = {
 	.rope_length = 5000 * 120, // 120 - maximum motor poles * 3
 	.braking_length = 100 * 120,
 	.passive_braking_length = 5000 * 120,
-	.overwinding = 0, // must be half of received braking length
 	.slowing_length = 100 * 120,
 	.slow_erpm = 5000,
 	.rewinding_trigger_length = 50 * 120,
@@ -848,8 +845,6 @@ static bool is_config_out_of_limits(const skypuff_config *conf)
 									 min_config.braking_length, max_config.braking_length) ||
 		   is_distance_out_of_limits("passive_braking_length", conf->passive_braking_length,
 									 min_config.passive_braking_length, max_config.passive_braking_length) ||
-		   is_distance_out_of_limits("overwinding", conf->overwinding,
-									 min_config.overwinding, conf->braking_length / 2) ||
 		   is_distance_out_of_limits("slowing_length", conf->slowing_length,
 									 min_config.slowing_length, max_config.slowing_length) ||
 		   is_distance_out_of_limits("rewinding_trigger_length", conf->rewinding_trigger_length,
@@ -1085,7 +1080,6 @@ static void set_example_conf(skypuff_config *cfg)
 	cfg->rope_length = meters_to_tac_steps(50);
 	cfg->braking_length = meters_to_tac_steps(1);
 	cfg->passive_braking_length = meters_to_tac_steps(0.5);
-	cfg->overwinding = meters_to_tac_steps(0.1);
 	cfg->rewinding_trigger_length = meters_to_tac_steps(0.2);
 	cfg->unwinding_trigger_length = meters_to_tac_steps(0.05);
 	cfg->slowing_length = meters_to_tac_steps(3);
@@ -1095,8 +1089,8 @@ static void set_example_conf(skypuff_config *cfg)
 	cfg->manual_slow_erpm = ms_to_erpm(2);
 
 	// Forces
-	cfg->kg_to_amps = 7;					   // 7 Amps for 1Kg force
-	cfg->amps_per_sec = 0.2 * cfg->kg_to_amps; // Change force slowly 0.2 kg/sec
+	cfg->kg_to_amps = 7;					 // 7 Amps for 1Kg force
+	cfg->amps_per_sec = 1 * cfg->kg_to_amps; // Change force slowly 0.2 kg/sec
 	cfg->brake_current = 0.3 * cfg->kg_to_amps;
 	cfg->manual_brake_current = 1 * cfg->kg_to_amps;
 	cfg->unwinding_current = 0.3 * cfg->kg_to_amps;
@@ -1106,7 +1100,7 @@ static void set_example_conf(skypuff_config *cfg)
 	cfg->manual_slow_speed_up_current = 0.3 * cfg->kg_to_amps;
 
 	// Pull settings
-	cfg->pull_current = 0.5 * cfg->kg_to_amps;
+	cfg->pull_current = 0.9 * cfg->kg_to_amps;
 	cfg->pre_pull_k = 30 / 100.0;
 	cfg->takeoff_pull_k = 60 / 100.0;
 	cfg->fast_pull_k = 120 / 100.0;
@@ -1145,11 +1139,11 @@ void app_custom_start(void)
 	// Terminal commands for the VESC Tool terminal can be registered.
 	terminal_register_command_callback(
 		"set_zero",
-		"Move zero point to this position",
+		"Move SkyPUFF zero point to this position",
 		"", terminal_set_zero);
 	terminal_register_command_callback(
 		"skypuff",
-		"Print SkyPUFF configuration",
+		"Print configuration",
 		"", terminal_print_conf);
 	terminal_register_command_callback(
 		"example_conf",
@@ -1157,7 +1151,7 @@ void app_custom_start(void)
 		"", terminal_set_example_conf);
 	terminal_register_command_callback(
 		"alive",
-		"Prolong communication alive period",
+		"Prolong SkyPUFF communication alive period",
 		"[milliseconds]", terminal_alive);
 	terminal_register_command_callback(
 		"set",
@@ -1165,7 +1159,7 @@ void app_custom_start(void)
 		"state", terminal_set_state);
 	terminal_register_command_callback(
 		"force",
-		"Set pull force",
+		"Set SkyPUFF pull force",
 		"[kg]", terminal_set_pull_force);
 #ifdef DEBUG_SMOOTH_MOTOR
 	terminal_register_command_callback(
@@ -1209,15 +1203,15 @@ void app_custom_configure(app_configuration *conf)
 // Returns true on transition
 static bool brake_or_slowing(const int cur_tac, const int abs_tac)
 {
-	// We are in the braking range with overwinding?
-	if (abs_tac < config.braking_length - config.overwinding)
+	// We are in the braking range?
+	if (abs_tac <= config.braking_length)
 	{
 		brake(cur_tac);
 		return true;
 	}
 
 	// Slowing range?
-	if (abs_tac < config.braking_length + config.slowing_length)
+	if (abs_tac <= config.braking_length + config.slowing_length)
 	{
 		float erpm = mc_interface_get_rpm();
 
@@ -1277,7 +1271,7 @@ inline static bool is_direction_changed_or_stopped(const float cur_erpm)
 
 inline static void brake_or_unwinding(const int cur_tac, const int abs_tac)
 {
-	if (abs_tac < config.braking_length - config.overwinding)
+	if (abs_tac <= config.braking_length)
 		brake(cur_tac);
 	else
 		unwinding(cur_tac);
@@ -1285,7 +1279,7 @@ inline static void brake_or_unwinding(const int cur_tac, const int abs_tac)
 
 inline static void brake_or_manual_brake(const int cur_tac, const int abs_tac)
 {
-	if (abs_tac < config.braking_length - config.overwinding)
+	if (abs_tac <= config.braking_length)
 		brake(cur_tac);
 	else
 		manual_brake(cur_tac);
@@ -1296,11 +1290,10 @@ inline static void slowing_or_speed_up_print(const int cur_tac, const float cur_
 {
 	if (loop_step - prev_print > short_print_delay)
 	{
-		int overwinding = config.braking_length - config.overwinding;
-		int distance_left = abs(cur_tac) - overwinding;
+		int distance_left = abs(cur_tac) - config.braking_length;
 		prev_print = loop_step;
 		commands_printf(
-			"%s, pos %.2fm (%d steps), speed: %.1fms (%.0f ERPM), until: %.1fms (%.0f ERPM), -- %.2fm to overwinding zone",
+			"%s, pos %.2fm (%d steps), speed: %.1fms (%.0f ERPM), until: %.1fms (%.0f ERPM), -- %.2fm to braking zone",
 			state_str(state),
 			(double)tac_steps_to_meters(cur_tac), cur_tac,
 			(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
@@ -1412,8 +1405,8 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		print_position_periodically(cur_tac, long_print_delay, "");
 		break;
 	case SLOWING:
-		// We are in the braking range with overwinding?
-		if (abs_tac < config.braking_length - config.overwinding)
+		// We are in the braking range?
+		if (abs_tac <= config.braking_length)
 		{
 			brake(cur_tac);
 			break;
@@ -1460,11 +1453,11 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 			break;
 		}
 
-		// Slowly rewinded more then opposite side of (breaking - overwinding) zone?
-		if ((cur_erpm > 0 && cur_tac >= config.braking_length - config.overwinding) ||
-			(cur_erpm < 0 && cur_tac <= -config.braking_length + config.overwinding))
+		// Slowly rewinded more then opposite side of braking  zone?
+		if ((cur_erpm > 0 && cur_tac >= config.braking_length) ||
+			(cur_erpm < 0 && cur_tac <= -config.braking_length))
 		{
-			commands_printf("SLOW: -- winded to opposite braking zone");
+			commands_printf("SLOW: -- unwinded to opposite braking zone");
 			brake(cur_tac);
 			break;
 		}
@@ -1487,7 +1480,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		abs_erpm = fabs(cur_erpm);
 
 		// Do not speed up in the braking zone
-		if (abs_tac < config.braking_length - config.overwinding)
+		if (abs_tac <= config.braking_length)
 		{
 			commands_printf("%s: speed %.1fms (%.0f ERPM) -- Braking zone",
 							(double)erpm_to_ms(cur_erpm), (double)cur_erpm, state_str(state));
@@ -1574,9 +1567,9 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 			break;
 		}
 
-		// Slowly rewinded more then opposite side of (breaking - overwinding) zone?
-		if ((cur_erpm > 0 && cur_tac >= config.braking_length - config.overwinding) ||
-			(cur_erpm < 0 && cur_tac <= -config.braking_length + config.overwinding))
+		// Slowly rewinded more then opposite side of breaking zone?
+		if ((cur_erpm > 0 && cur_tac >= config.braking_length) ||
+			(cur_erpm < 0 && cur_tac <= -config.braking_length))
 		{
 			commands_printf("MANUAL_SLOW: -- winded to opposite braking zone");
 			brake(cur_tac);
@@ -1728,7 +1721,6 @@ inline static void print_conf(const int cur_tac)
 	commands_printf("  rope length: %.2fm (%d steps)", (double)tac_steps_to_meters(config.rope_length), config.rope_length);
 	commands_printf("  braking range: %.2fm (%d steps)", (double)tac_steps_to_meters(config.braking_length), config.braking_length);
 	commands_printf("  passive braking range: %.2fm (%d steps)", (double)tac_steps_to_meters(config.passive_braking_length), config.passive_braking_length);
-	commands_printf("  overwinding: %.2fm (%d steps)", (double)tac_steps_to_meters(config.overwinding), config.overwinding);
 	commands_printf("  slowing range: %.2fm (%d steps)", (double)tac_steps_to_meters(config.slowing_length), config.slowing_length);
 	commands_printf("  rewinding trigger range: %.2fm (%d steps)", (double)tac_steps_to_meters(config.rewinding_trigger_length), config.rewinding_trigger_length);
 	commands_printf("  unwinding trigger range: %.2fm (%d steps)", (double)tac_steps_to_meters(config.unwinding_trigger_length), config.unwinding_trigger_length);
@@ -1820,9 +1812,17 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 			break;
 		}
 
+		if (abs_tac <= config.braking_length)
+		{
+			commands_printf("%s: -- Please unwind from braking range",
+							state_str(state));
+			break;
+		}
+
 		// Possible from manual braking or pulling states
 		switch (state)
 		{
+		case BRAKING:
 		case MANUAL_BRAKING:
 		case PRE_PULL:
 		case TAKEOFF_PULL:
@@ -1856,6 +1856,9 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 
 		config.pull_current = pull_current;
 
+		commands_printf("%s: -- Force %.2fKg (%.1fA) set",
+						state_str(state), (double)terminal_pull_kg, (double)config.pull_current);
+
 		// Update pull force now?
 		switch (state)
 		{
@@ -1878,8 +1881,16 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 
 		break;
 	case SET_PRE_PULL:
+		if (abs_tac <= config.braking_length)
+		{
+			commands_printf("%s: -- Please unwind from braking range",
+							state_str(state));
+			break;
+		}
+
 		switch (state)
 		{
+		case BRAKING:
 		case UNWINDING:
 		case REWINDING:
 			pre_pull(cur_tac);
@@ -1901,8 +1912,16 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 
 		break;
 	case SET_PULL:
+		if (abs_tac <= config.braking_length)
+		{
+			commands_printf("%s: -- Please unwind from braking range",
+							state_str(state));
+			break;
+		}
+
 		switch (state)
 		{
+		case BRAKING:
 		case TAKEOFF_PULL:
 		case UNWINDING:
 		case REWINDING:
