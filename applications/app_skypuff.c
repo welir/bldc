@@ -250,7 +250,8 @@ static const skypuff_drive max_drive_limits = {
 	.gear_ratio = 20,
 };
 
-// Do we actually need meters and meters per second for limits?
+// Do we actually need meters and kilograms here?
+// Check them on UI side
 static const skypuff_config min_config = {
 	.kg_to_amps = 0.5,
 	.amps_per_sec = 0.5,
@@ -295,10 +296,10 @@ static const skypuff_config max_config = {
 	.takeoff_pull_k = 0.8,
 	.fast_pull_k = 1.5,
 	.takeoff_trigger_length = 5000 * 120,
-	.pre_pull_timeout = 5000, // 5 secs
-	.takeoff_period = 60000,  // 1 min
-	.brake_current = 500,
-	.manual_brake_current = 500,
+	.pre_pull_timeout = 5000,   // 5 secs
+	.takeoff_period = 60000,	// 1 min
+	.brake_current = 500,		// Charge battery mode possible
+	.manual_brake_current = 30, // Do not kill pilot in passive winch mode
 	.unwinding_current = 50,
 	.rewinding_current = 100,
 	.slow_max_current = 50,
@@ -923,11 +924,13 @@ inline static void brake_state(const int cur_tac, const skypuff_state new_state,
 	// Braking could be applied in the braking states to renew control timeout
 	if (state != new_state)
 	{
+		float erpm = mc_interface_get_rpm();
 		prev_print = loop_step;
 		prev_printed_tac = cur_tac;
-		commands_printf("%s: pos %.2fm (%d steps), breaking %.1fKg (%.1fA)%s",
+		commands_printf("%s: pos %.2fm (%d steps), speed: %.1fms (%.0f ERPM), breaking %.1fKg (%.1fA)%s",
 						state_str(new_state),
 						(double)tac_steps_to_meters(cur_tac), cur_tac,
+						(double)erpm_to_ms(erpm), (double)erpm,
 						(double)(current / config.kg_to_amps), (double)current,
 						additional_msg);
 
@@ -1142,27 +1145,27 @@ void app_custom_start(void)
 	// Terminal commands for the VESC Tool terminal can be registered.
 	terminal_register_command_callback(
 		"set_zero",
-		"Move zero point here.",
+		"Move zero point to this position",
 		"", terminal_set_zero);
 	terminal_register_command_callback(
 		"skypuff",
-		"Print SkyPUFF configuration here.",
+		"Print SkyPUFF configuration",
 		"", terminal_print_conf);
 	terminal_register_command_callback(
 		"example_conf",
-		"Set SkyPUFF model winch configuration.",
+		"Set SkyPUFF model winch configuration",
 		"", terminal_set_example_conf);
 	terminal_register_command_callback(
 		"alive",
-		"Prolong communication alive period.",
+		"Prolong communication alive period",
 		"[milliseconds]", terminal_alive);
 	terminal_register_command_callback(
 		"set",
-		"Set new SkyPUFF state: MANUAL_BRAKING, UNWINDING, MANUAL_SLOW, MANUAL_SLOW_BACK, PRE_PULL, TAKEOFF_PULL, PULL, FAST_PULL.",
+		"Set new SkyPUFF state: MANUAL_BRAKING, UNWINDING, MANUAL_SLOW, MANUAL_SLOW_BACK, PRE_PULL, TAKEOFF_PULL, PULL, FAST_PULL",
 		"state", terminal_set_state);
 	terminal_register_command_callback(
 		"force",
-		"Set pull force.",
+		"Set pull force",
 		"[kg]", terminal_set_pull_force);
 #ifdef DEBUG_SMOOTH_MOTOR
 	terminal_register_command_callback(
@@ -1217,10 +1220,14 @@ static bool brake_or_slowing(const int cur_tac, const int abs_tac)
 	if (abs_tac < config.braking_length + config.slowing_length)
 	{
 		float erpm = mc_interface_get_rpm();
-		float abs_erpm = fabs(erpm);
 
-		// Fast enough for slowing?
-		if (abs_erpm >= config.slow_erpm)
+		// Check direction and erpm to decide about slowing
+		if (cur_tac < 0 && erpm > config.slow_erpm)
+		{
+			slowing(cur_tac, erpm);
+			return true;
+		}
+		else if (cur_tac >= 0 && erpm < -config.slow_erpm)
 		{
 			slowing(cur_tac, erpm);
 			return true;
