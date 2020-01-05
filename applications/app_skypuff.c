@@ -101,7 +101,7 @@ static int state_start_time;   // Count the duration of state
 static float terminal_pull_kg; // Pulling force to set
 static volatile int alive_inc; // Communication timeout increment from terminal thread
 
-// Winch states machine
+// Winch FSM
 typedef enum
 {
 	UNINITIALIZED,			   // Released motor until some valid configuration set
@@ -213,6 +213,7 @@ typedef struct
 	int pre_pull_timeout;				// Timeout before saving position after PRE_PULL
 	int takeoff_period;					// Time of TAKEOFF_PULL and then switch to normal PULL
 	float brake_current;				// Braking zone force, could be set high to charge battery driving away
+	float slowing_current;				// Set zero to release motor when slowing or positive value to brake
 	float manual_brake_current;			// Manual braking force
 	float unwinding_current;			// Unwinding force
 	float rewinding_current;			// Rewinding force
@@ -269,6 +270,7 @@ static const skypuff_config min_config = {
 	.pre_pull_timeout = 100, // 0.1 secs
 	.takeoff_period = 100,
 	.brake_current = 1,
+	.slowing_current = 0,
 	.manual_brake_current = 1,
 	.unwinding_current = 1,
 	.rewinding_current = 1,
@@ -296,6 +298,7 @@ static const skypuff_config max_config = {
 	.pre_pull_timeout = 5000,   // 5 secs
 	.takeoff_period = 60000,	// 1 min
 	.brake_current = 500,		// Charge battery mode possible
+	.slowing_current = 30,		// Do not brake hardly on high unwinding speeds
 	.manual_brake_current = 30, // Do not kill pilot in passive winch mode
 	.unwinding_current = 50,
 	.rewinding_current = 100,
@@ -566,11 +569,11 @@ inline static void smooth_motor_adjustment(const int cur_tac, const int abs_tac)
 	switch (target_motor_state.mode)
 	{
 	case MOTOR_BRAKING:
-		// Braking zone always instant
-		if (abs_tac <= config.braking_length)
+		// Braking and slowing zone always instant
+		if (abs_tac <= config.braking_length + config.slowing_length)
 		{
 #ifdef DEBUG_SMOOTH_MOTOR
-			commands_printf("%s: loop %d, -- braking zone detected", state_str(state), loop_step);
+			commands_printf("%s: loop %d, -- braking/slowing zone detected", state_str(state), loop_step);
 #endif
 			smooth_motor_instant_brake();
 			return;
@@ -861,6 +864,8 @@ static bool is_config_out_of_limits(const skypuff_config *conf)
 								 min_config.pull_current, max_config.pull_current) ||
 		   is_pull_out_of_limits("brake_current", conf->brake_current,
 								 min_config.brake_current, max_config.brake_current) ||
+		   is_pull_out_of_limits("slowing_current", conf->slowing_current,
+								 min_config.slowing_current, max_config.slowing_current) ||
 		   is_pull_out_of_limits("manual_brake_current", conf->manual_brake_current,
 								 min_config.manual_brake_current, max_config.manual_brake_current) ||
 		   is_pull_out_of_limits("unwinding_current", conf->unwinding_current,
@@ -1034,7 +1039,11 @@ inline static void slowing(const int cur_tac, const float erpm)
 					(double)erpm_to_ms(erpm), (double)erpm,
 					(double)erpm_to_ms(config.slow_erpm), (double)config.slow_erpm);
 
-	smooth_motor_release();
+	// Brake or release
+	if (config.slowing_current > 0.1)
+		smooth_motor_brake(cur_tac, fabs(cur_tac), config.slowing_current);
+	else
+		smooth_motor_release();
 }
 
 inline static void slow_state(const int cur_tac, const float cur_erpm,
@@ -1092,12 +1101,13 @@ static void set_example_conf(skypuff_config *cfg)
 	cfg->kg_to_amps = 7;					 // 7 Amps for 1Kg force
 	cfg->amps_per_sec = 1 * cfg->kg_to_amps; // Change force slowly 0.2 kg/sec
 	cfg->brake_current = 0.3 * cfg->kg_to_amps;
+	cfg->slowing_current = 0.5 * cfg->kg_to_amps;
 	cfg->manual_brake_current = 1 * cfg->kg_to_amps;
-	cfg->unwinding_current = 0.3 * cfg->kg_to_amps;
-	cfg->rewinding_current = 0.5 * cfg->kg_to_amps;
-	cfg->slow_max_current = 0.4 * cfg->kg_to_amps;
-	cfg->manual_slow_max_current = 0.4 * cfg->kg_to_amps;
-	cfg->manual_slow_speed_up_current = 0.3 * cfg->kg_to_amps;
+	cfg->unwinding_current = 0.4 * cfg->kg_to_amps;
+	cfg->rewinding_current = 0.6 * cfg->kg_to_amps;
+	cfg->slow_max_current = 1 * cfg->kg_to_amps;
+	cfg->manual_slow_max_current = 1 * cfg->kg_to_amps;
+	cfg->manual_slow_speed_up_current = 0.4 * cfg->kg_to_amps;
 
 	// Pull settings
 	cfg->pull_current = 0.9 * cfg->kg_to_amps;
@@ -1728,6 +1738,7 @@ inline static void print_conf(const int cur_tac)
 	commands_printf("  manual brake force: %.2fkg (%.1fA)", (double)(config.manual_brake_current / config.kg_to_amps), (double)config.manual_brake_current);
 	commands_printf("  unwinding force: %.2fkg (%.1fA)", (double)(config.unwinding_current / config.kg_to_amps), (double)config.unwinding_current);
 	commands_printf("  rewinding force: %.2fkg (%.1fA)", (double)(config.rewinding_current / config.kg_to_amps), (double)config.rewinding_current);
+	commands_printf("  slowing brake: %.2fkg (%.1fA)", (double)(config.slowing_current / config.kg_to_amps), (double)config.slowing_current);
 	commands_printf("  slow speed: %.1fms (%.0f ERPM)", (double)erpm_to_ms(config.slow_erpm), (double)config.slow_erpm);
 	commands_printf("  maximum slow force: %.2fkg (%.1fA)", (double)(config.slow_max_current / config.kg_to_amps), (double)config.slow_max_current);
 	commands_printf("  manual slow max force: %.2fkg (%.1fA)", (double)(config.manual_slow_max_current / config.kg_to_amps), (double)config.manual_slow_max_current);
