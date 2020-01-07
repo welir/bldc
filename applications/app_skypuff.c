@@ -1,5 +1,5 @@
 /*
-	Copyright 2019 Kirill Kostiuchenko	kisel2626@gmail.com
+	Copyright 2019 Kirill Kostiuchenko	<kisel2626@gmail.com>
 
 	This file is part of the VESC firmware.
 
@@ -29,6 +29,8 @@
 #include "terminal.h"
 #include "timeout.h"
 #include "utils.h"
+#include "packet.h"
+#include "buffer.h"
 
 #include <math.h>
 #include <limits.h>
@@ -36,6 +38,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+
+// Uncomment to enable Smooth Motor Control debugging terminal commands
+//#define DEBUG_SMOOTH_MOTOR
+#include "app_skypuff.h"
 
 /*
 	This application turns VESC into paragliding winch controller.
@@ -69,9 +75,6 @@ const int smooth_max_step_delay = 100;
 
 const char *limits_wrn = "-- CONFIGURATION IS OUT OF LIMITS --";
 
-// Uncomment to debug Smooth Motor Control from terminal
-//#define DEBUG_SMOOTH_MOTOR
-
 // Threads
 static THD_FUNCTION(my_thread, arg);
 static THD_WORKING_AREA(my_thread_wa, 2048);
@@ -79,6 +82,7 @@ static THD_WORKING_AREA(my_thread_wa, 2048);
 // Private functions
 static void terminal_set_zero(int argc, const char **argv);
 static void terminal_print_conf(int argc, const char **argv);
+static void terminal_get_conf(int argc, const char **argv); // Send serialized conf with COMM_CUSTOM_APP_DATA
 static void terminal_set_example_conf(int argc, const char **argv);
 static void terminal_alive(int argc, const char **argv);
 static void terminal_set_state(int argc, const char **argv);
@@ -101,30 +105,9 @@ static int state_start_time;   // Count the duration of state
 static float terminal_pull_kg; // Pulling force to set
 static volatile int alive_inc; // Communication timeout increment from terminal thread
 
-// Winch FSM
-typedef enum
-{
-	UNINITIALIZED,			   // Released motor until some valid configuration set
-	BRAKING,				   // Braking zone near take off
-	SLOWING,				   // Next to braking zone to slow down the motor
-	SLOW,					   // Constant speed in direction to zero
-	UNWINDING,				   // Low force rope tension during step up or unwinder mode
-	REWINDING,				   // Fast rope winding to zero for unwinder mode
-	PRE_PULL,				   // Pull the pilot while stays on the takeoff
-	TAKEOFF_PULL,			   // Takeoff pull
-	PULL,					   // Nominal pull
-	FAST_PULL,				   // Fast pull
-	MANUAL_BRAKING,			   // Any position braking caused by operator or communication timeout
-	MANUAL_SLOW_SPEED_UP,	  // Speed up until manual constant speed in direction to zero
-	MANUAL_SLOW,			   // Constant speed mode in direction to zero from any position
-	MANUAL_SLOW_BACK_SPEED_UP, // Speed up back in direction from zero until manual constant speed
-	MANUAL_SLOW_BACK,		   // Constant speed mode in direction from zero
-#ifdef DEBUG_SMOOTH_MOTOR
-	MANUAL_DEBUG_SMOOTH, // Debug smooth motor movements with 'smooth' terminal commands
-#endif
-} skypuff_state;
-
 static skypuff_state state;
+static skypuff_config config;
+static skypuff_config set_config; // updates from terminal thread;
 
 // Terminal thread commands
 typedef enum
@@ -144,6 +127,7 @@ typedef enum
 	SET_SMOOTH,
 #endif
 	GET_CONF,
+	PRINT_CONF,
 	SET_CONF,
 } skypuff_terminal_command;
 
@@ -190,54 +174,11 @@ static smooth_motor_state terminal_motor_state;
 static int next_smooth_motor_adjustment; // Loop count for next motor adjustment
 static int prev_smooth_motor_adjustment; // Loop count of previous motor adjustment
 
-// Must be increased on skypuff_config struct update
-// Don't forget to update HW limits structs and checking functions
-static const int config_version = 1;
-
-typedef struct
-{
-	float kg_to_amps;					// Winch drive force coefficient
-	float amps_per_sec;					// Speed to change force during smooth motor adjustments
-	int rope_length;					// Winch rope length (used by interface only)
-	int braking_length;					// Tachometer range of braking zone
-	int passive_braking_length;			// Increase braking_length for passive winches when car drive 150m from takeoff
-	int slowing_length;					// Range after braking zone to slow down motor when unwinding to zero
-	float slow_erpm;					// Constant erpm in direction to zero
-	int rewinding_trigger_length;		// Switch to fast rewinding state after going back this length
-	int unwinding_trigger_length;		// Back to unwinding from rewinding if this range unwinded again
-	float pull_current;					// Winch normal pull force, usually pilot weight
-	float pre_pull_k;					// pre_pull_k * pull_current = pull current when pilots stays on the ground
-	float takeoff_pull_k;				// takeoff_pull_k * pull_current = pull current during takeoff
-	float fast_pull_k;					// fast_pull_k * pull_current = pull current to get altitude fast
-	int takeoff_trigger_length;			// Minimal PRE_PULL movement for transition to TAKEOFF_PULL
-	int pre_pull_timeout;				// Timeout before saving position after PRE_PULL
-	int takeoff_period;					// Time of TAKEOFF_PULL and then switch to normal PULL
-	float brake_current;				// Braking zone force, could be set high to charge battery driving away
-	float slowing_current;				// Set zero to release motor when slowing or positive value to brake
-	float manual_brake_current;			// Manual braking force
-	float unwinding_current;			// Unwinding force
-	float rewinding_current;			// Rewinding force
-	float slow_max_current;				// Max force for constant slow speed
-	float manual_slow_max_current;		// Max force for MANUAL_SLOW and MANUAL_SLOW_BACK
-	float manual_slow_speed_up_current; // Speed up current for manual constant speed states
-	float manual_slow_erpm;				// Constant speed for manual rotation
-} skypuff_config;
-
-static skypuff_config config;
-static skypuff_config set_config; // updates from terminal thread;
-
 /*
 	Skypuff relies on system drive settings to calculate rope meters
 	This struct is necessary for limits only,
 	actual values stored in mc_configuration struct.
 */
-typedef struct
-{
-	int motor_poles;
-	float wheel_diameter;
-	float gear_ratio;
-} skypuff_drive;
-
 static const skypuff_drive min_drive_limits = {
 	.motor_poles = 2,
 	.wheel_diameter = 0.01, // Meters
@@ -308,7 +249,7 @@ static const skypuff_config max_config = {
 	.manual_slow_erpm = 8000,
 };
 
-inline static const char *state_str(const skypuff_state s)
+inline const char *state_str(const skypuff_state s)
 {
 	switch (s)
 	{
@@ -1156,6 +1097,10 @@ void app_custom_start(void)
 		"Print configuration",
 		"", terminal_print_conf);
 	terminal_register_command_callback(
+		"custom_app_data",
+		"Send SkuPUFF serialized COMM_CUSTOM_APP_DATA state and settings",
+		"", terminal_get_conf);
+	terminal_register_command_callback(
 		"example_conf",
 		"Set SkyPUFF model winch configuration",
 		"", terminal_set_example_conf);
@@ -1188,6 +1133,7 @@ void app_custom_stop(void)
 {
 	terminal_unregister_callback(terminal_set_zero);
 	terminal_unregister_callback(terminal_print_conf);
+	terminal_unregister_callback(terminal_get_conf);
 	terminal_unregister_callback(terminal_set_example_conf);
 	terminal_unregister_callback(terminal_alive);
 	terminal_unregister_callback(terminal_set_state);
@@ -1725,7 +1671,7 @@ inline static void print_conf(const int cur_tac)
 	commands_printf("  motor poles: %dp", mc_conf->si_motor_poles);
 	commands_printf("  gear ratio: %.5f", (double)mc_conf->si_gear_ratio);
 
-	commands_printf("SkyPUFF configuration v%d:", config_version);
+	commands_printf("SkyPUFF configuration v%d:", skypuff_config_version);
 	commands_printf("  amperes per 1kg force: %.1fAKg", (double)config.kg_to_amps);
 	commands_printf("  force changing speed: %.2fKg/sec (%.1fA/sec)", (double)(config.amps_per_sec / config.kg_to_amps), (double)config.amps_per_sec);
 	commands_printf("  rope length: %.2fm (%d steps)", (double)tac_steps_to_meters(config.rope_length), config.rope_length);
@@ -1738,7 +1684,7 @@ inline static void print_conf(const int cur_tac)
 	commands_printf("  manual brake force: %.2fkg (%.1fA)", (double)(config.manual_brake_current / config.kg_to_amps), (double)config.manual_brake_current);
 	commands_printf("  unwinding force: %.2fkg (%.1fA)", (double)(config.unwinding_current / config.kg_to_amps), (double)config.unwinding_current);
 	commands_printf("  rewinding force: %.2fkg (%.1fA)", (double)(config.rewinding_current / config.kg_to_amps), (double)config.rewinding_current);
-	commands_printf("  slowing brake: %.2fkg (%.1fA)", (double)(config.slowing_current / config.kg_to_amps), (double)config.slowing_current);
+	commands_printf("  slowing brake force: %.2fkg (%.1fA)", (double)(config.slowing_current / config.kg_to_amps), (double)config.slowing_current);
 	commands_printf("  slow speed: %.1fms (%.0f ERPM)", (double)erpm_to_ms(config.slow_erpm), (double)config.slow_erpm);
 	commands_printf("  maximum slow force: %.2fkg (%.1fA)", (double)(config.slow_max_current / config.kg_to_amps), (double)config.slow_max_current);
 	commands_printf("  manual slow max force: %.2fkg (%.1fA)", (double)(config.manual_slow_max_current / config.kg_to_amps), (double)config.manual_slow_max_current);
@@ -1756,6 +1702,65 @@ inline static void print_conf(const int cur_tac)
 	commands_printf("SkyPUFF state:");
 	commands_printf("  state %s, current position: %.2fm (%d steps)", state_str(state), (double)tac_steps_to_meters(cur_tac), cur_tac);
 	commands_printf("  loop counter: %d, alive until: %d, %s", loop_step, alive_until, loop_step >= alive_until ? "communication timeout" : "no timeout");
+}
+
+inline static void buffer_append_drive_setttings(uint8_t *buffer, int32_t *ind)
+{
+	buffer[(*ind)++] = (uint8_t)mc_conf->si_motor_poles;
+	buffer_append_float32_auto(buffer, mc_conf->si_gear_ratio, ind);
+	buffer_append_float32_auto(buffer, mc_conf->si_wheel_diameter, ind);
+}
+
+inline static void buffer_append_skypuff_settings(uint8_t *buffer, int32_t *ind)
+{
+	buffer_append_float32_auto(buffer, config.kg_to_amps, ind);
+	buffer_append_float32_auto(buffer, config.amps_per_sec, ind);
+	buffer_append_int32(buffer, config.rope_length, ind);
+	buffer_append_int32(buffer, config.braking_length, ind);
+	buffer_append_int32(buffer, config.passive_braking_length, ind);
+	buffer_append_int32(buffer, config.slowing_length, ind);
+	buffer_append_float32_auto(buffer, config.slow_erpm, ind);
+	buffer_append_int32(buffer, config.rewinding_trigger_length, ind);
+	buffer_append_int32(buffer, config.unwinding_trigger_length, ind);
+	buffer_append_float32_auto(buffer, config.pull_current, ind);
+	buffer_append_float32_auto(buffer, config.pre_pull_k, ind);
+	buffer_append_float32_auto(buffer, config.takeoff_pull_k, ind);
+	buffer_append_float32_auto(buffer, config.fast_pull_k, ind);
+	buffer_append_int32(buffer, config.takeoff_trigger_length, ind);
+	buffer_append_int32(buffer, config.pre_pull_timeout, ind);
+	buffer_append_int32(buffer, config.takeoff_period, ind);
+	buffer_append_float32_auto(buffer, config.brake_current, ind);
+	buffer_append_float32_auto(buffer, config.slowing_current, ind);
+	buffer_append_float32_auto(buffer, config.manual_brake_current, ind);
+	buffer_append_float32_auto(buffer, config.unwinding_current, ind);
+	buffer_append_float32_auto(buffer, config.rewinding_current, ind);
+	buffer_append_float32_auto(buffer, config.slow_max_current, ind);
+	buffer_append_float32_auto(buffer, config.manual_slow_max_current, ind);
+	buffer_append_float32_auto(buffer, config.manual_slow_speed_up_current, ind);
+	buffer_append_float32_auto(buffer, config.manual_slow_erpm, ind);
+}
+
+// Serialize and send COMM_CUSTOM_APP_DATA
+inline static void get_conf(const int cur_tac)
+{
+	const int max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
+	uint8_t buffer[max_buf_size];
+	int32_t ind = 0;
+
+	// Serialization magic: version, state, position, drive settings, skypuff settings
+	buffer[ind++] = skypuff_config_version;
+	buffer[ind++] = state;
+	buffer_append_int32(buffer, cur_tac, &ind);
+	buffer_append_drive_setttings(buffer, &ind);
+	buffer_append_skypuff_settings(buffer, &ind);
+
+	if (ind > max_buf_size)
+	{
+		commands_printf("%s: -- ALARMA!!! -- get_conf() max buffer size %d, serialized bufer %d bytes. Memory corrupted!",
+						state_str(state), max_buf_size, ind);
+	}
+
+	commands_send_app_data(buffer, ind);
 }
 
 inline static void process_terminal_commands(const int cur_tac, const int abs_tac)
@@ -1954,8 +1959,12 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 		fast_pull(cur_tac);
 
 		break;
-	case GET_CONF:
+	case PRINT_CONF:
 		print_conf(cur_tac);
+
+		break;
+	case GET_CONF:
+		get_conf(cur_tac);
 
 		break;
 	case SET_CONF:
@@ -2113,6 +2122,14 @@ static void terminal_set_zero(int argc, const char **argv)
 }
 
 static void terminal_print_conf(int argc, const char **argv)
+{
+	(void)argc;
+	(void)argv;
+
+	terminal_command = PRINT_CONF;
+}
+
+static void terminal_get_conf(int argc, const char **argv)
 {
 	(void)argc;
 	(void)argv;
