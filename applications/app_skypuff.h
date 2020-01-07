@@ -88,4 +88,47 @@ typedef struct
     float gear_ratio;
 } skypuff_drive;
 
+inline const char *state_str(const skypuff_state s)
+{
+    switch (s)
+    {
+    case UNINITIALIZED:
+        return "UNITIALIZED";
+    case BRAKING:
+        return "BRAKING";
+    case MANUAL_BRAKING:
+        return "MANUAL_BRAKING";
+    case MANUAL_SLOW_SPEED_UP:
+        return "MANUAL_SLOW_SPEED_UP";
+    case MANUAL_SLOW:
+        return "MANUAL_SLOW";
+    case MANUAL_SLOW_BACK_SPEED_UP:
+        return "MANUAL_SLOW_BACK_SPEED_UP";
+    case MANUAL_SLOW_BACK:
+        return "MANUAL_SLOW_BACK";
+    case UNWINDING:
+        return "UNWINDING";
+    case REWINDING:
+        return "REWINDING";
+    case SLOWING:
+        return "SLOWING";
+    case SLOW:
+        return "SLOW";
+    case PRE_PULL:
+        return "PRE_PULL";
+    case TAKEOFF_PULL:
+        return "TAKEOFF_PULL";
+    case PULL:
+        return "PULL";
+    case FAST_PULL:
+        return "FAST_PULL";
+#ifdef DEBUG_SMOOTH_MOTOR
+    case MANUAL_DEBUG_SMOOTH:
+        return "MANUAL_DEBUG_SMOOTH";
+#endif
+    default:
+        return "UNKNOWN";
+    }
+}
+
 #endif

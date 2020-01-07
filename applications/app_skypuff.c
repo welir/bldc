@@ -249,49 +249,6 @@ static const skypuff_config max_config = {
 	.manual_slow_erpm = 8000,
 };
 
-inline const char *state_str(const skypuff_state s)
-{
-	switch (s)
-	{
-	case UNINITIALIZED:
-		return "UNITIALIZED";
-	case BRAKING:
-		return "BRAKING";
-	case MANUAL_BRAKING:
-		return "MANUAL_BRAKING";
-	case MANUAL_SLOW_SPEED_UP:
-		return "MANUAL_SLOW_SPEED_UP";
-	case MANUAL_SLOW:
-		return "MANUAL_SLOW";
-	case MANUAL_SLOW_BACK_SPEED_UP:
-		return "MANUAL_SLOW_BACK_SPEED_UP";
-	case MANUAL_SLOW_BACK:
-		return "MANUAL_SLOW_BACK";
-	case UNWINDING:
-		return "UNWINDING";
-	case REWINDING:
-		return "REWINDING";
-	case SLOWING:
-		return "SLOWING";
-	case SLOW:
-		return "SLOW";
-	case PRE_PULL:
-		return "PRE_PULL";
-	case TAKEOFF_PULL:
-		return "TAKEOFF_PULL";
-	case PULL:
-		return "PULL";
-	case FAST_PULL:
-		return "FAST_PULL";
-#ifdef DEBUG_SMOOTH_MOTOR
-	case MANUAL_DEBUG_SMOOTH:
-		return "MANUAL_DEBUG_SMOOTH";
-#endif
-	default:
-		return "UNKNOWN";
-	}
-}
-
 inline static const char *motor_mode_str(smooth_motor_mode m)
 {
 	switch (m)
@@ -1040,7 +997,7 @@ static void set_example_conf(skypuff_config *cfg)
 
 	// Forces
 	cfg->kg_to_amps = 7;					 // 7 Amps for 1Kg force
-	cfg->amps_per_sec = 1 * cfg->kg_to_amps; // Change force slowly 0.2 kg/sec
+	cfg->amps_per_sec = 1 * cfg->kg_to_amps; // Change force slowly 1 Kg/sec
 	cfg->brake_current = 0.3 * cfg->kg_to_amps;
 	cfg->slowing_current = 0.5 * cfg->kg_to_amps;
 	cfg->manual_brake_current = 1 * cfg->kg_to_amps;
@@ -1058,6 +1015,13 @@ static void set_example_conf(skypuff_config *cfg)
 	cfg->takeoff_trigger_length = meters_to_tac_steps(0.1);
 	cfg->pre_pull_timeout = 2 * 1000;
 	cfg->takeoff_period = 5 * 1000;
+}
+
+void custom_app_data_handler(unsigned char *data, unsigned int len)
+{
+	(void)data;
+	commands_printf("%s: -- custom_app_data_handler(): %u bytes received",
+					state_str(state), len);
 }
 
 // Called when the custom application is started. Start our
@@ -1086,6 +1050,8 @@ void app_custom_start(void)
 	read_config_from_eeprom(&config);
 
 	state = is_config_out_of_limits(&config) ? UNINITIALIZED : BRAKING;
+
+	commands_set_app_data_handler(custom_app_data_handler);
 
 	// Terminal commands for the VESC Tool terminal can be registered.
 	terminal_register_command_callback(
@@ -1131,6 +1097,7 @@ void app_custom_start(void)
 // and release callbacks.
 void app_custom_stop(void)
 {
+	commands_set_app_data_handler(NULL);
 	terminal_unregister_callback(terminal_set_zero);
 	terminal_unregister_callback(terminal_print_conf);
 	terminal_unregister_callback(terminal_get_conf);
