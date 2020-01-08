@@ -182,7 +182,7 @@ static int prev_smooth_motor_adjustment; // Loop count of previous motor adjustm
 static const skypuff_drive min_drive_limits = {
 	.motor_poles = 2,
 	.wheel_diameter = 0.01, // Meters
-	.gear_ratio = 0.05,		// Motor turns for 1 spool turn
+	.gear_ratio = 0.05,		// Motor turns per 1 spool turn
 };
 
 static const skypuff_drive max_drive_limits = {
@@ -194,7 +194,7 @@ static const skypuff_drive max_drive_limits = {
 // Do we actually need meters and kilograms here?
 // Check them on UI side
 static const skypuff_config min_config = {
-	.kg_to_amps = 0.5,
+	.amps_per_kg = 0.5,
 	.amps_per_sec = 0.5,
 	.rope_length = 5,
 	.braking_length = 5,
@@ -222,8 +222,8 @@ static const skypuff_config min_config = {
 };
 
 static const skypuff_config max_config = {
-	.kg_to_amps = 30,
-	.amps_per_sec = 500,
+	.amps_per_kg = 30,
+	.amps_per_sec = 5000,	  // Almost instant set possible
 	.rope_length = 5000 * 120, // 120 - maximum motor poles * 3
 	.braking_length = 100 * 120,
 	.passive_braking_length = 5000 * 120,
@@ -313,7 +313,7 @@ inline static void snprintf_motor_state(const smooth_motor_state *s, char *buf, 
 	case MOTOR_BRAKING:
 		// Print precisely to simplify debuggging
 		snprintf(buf, buf_len, "%s (%.3fkg / %.2fA)", motor_mode_str(s->mode),
-				 (double)(s->param.current / config.kg_to_amps), (double)s->param.current);
+				 (double)(s->param.current / config.amps_per_kg), (double)s->param.current);
 		break;
 	case MOTOR_SPEED:
 		snprintf(buf, buf_len, "%s (%.1fms / %.0f ERPM)", motor_mode_str(s->mode),
@@ -691,9 +691,9 @@ inline static bool is_pull_out_of_limits(const char *name,
 
 	commands_printf("%s: %s %s: %.1fA (%.2fKg) is out of limits [%.1fA (%.2fKg), %.1fA (%.2fKg)]",
 					state_str(state), limits_wrn, name,
-					(double)amps, (double)(amps / config.kg_to_amps),
-					(double)min, (double)(min / config.kg_to_amps),
-					(double)max, (double)(max / config.kg_to_amps));
+					(double)amps, (double)(amps / config.amps_per_kg),
+					(double)min, (double)(min / config.amps_per_kg),
+					(double)max, (double)(max / config.amps_per_kg));
 	return true;
 }
 
@@ -736,8 +736,8 @@ static bool is_config_out_of_limits(const skypuff_config *conf)
 		   is_float_out_of_limits("gear_ratio", "turn(s)", mc_conf->si_gear_ratio,
 								  min_drive_limits.gear_ratio, max_drive_limits.gear_ratio) ||
 		   // finally our conf
-		   is_float_out_of_limits("kg_to_amps", "KgA", conf->kg_to_amps,
-								  min_config.kg_to_amps, max_config.kg_to_amps) ||
+		   is_float_out_of_limits("amps_per_kg", "KgA", conf->amps_per_kg,
+								  min_config.amps_per_kg, max_config.amps_per_kg) ||
 		   is_float_out_of_limits("amps_per_sec", "A/Sec", conf->amps_per_sec,
 								  min_config.amps_per_sec, max_config.amps_per_sec) ||
 		   is_distance_out_of_limits("rope_length", conf->rope_length,
@@ -829,7 +829,7 @@ inline static void brake_state(const int cur_tac, const skypuff_state new_state,
 						state_str(new_state),
 						(double)tac_steps_to_meters(cur_tac), cur_tac,
 						(double)erpm_to_ms(erpm), (double)erpm,
-						(double)(current / config.kg_to_amps), (double)current,
+						(double)(current / config.amps_per_kg), (double)current,
 						additional_msg);
 
 		state = new_state;
@@ -869,7 +869,7 @@ inline static void pull_state(const int cur_tac, const float pull_current, const
 	commands_printf("%s: pos: %.2fm (%d steps), pull: %.1fKg (%.1fA)%s",
 					state_str(state),
 					(double)tac_steps_to_meters(cur_tac), cur_tac,
-					(double)(current / config.kg_to_amps), (double)current,
+					(double)(current / config.amps_per_kg), (double)current,
 					additional_msg);
 
 	prev_abs_tac = abs(cur_tac);
@@ -996,19 +996,19 @@ static void set_example_conf(skypuff_config *cfg)
 	cfg->manual_slow_erpm = ms_to_erpm(2);
 
 	// Forces
-	cfg->kg_to_amps = 7;					 // 7 Amps for 1Kg force
-	cfg->amps_per_sec = 1 * cfg->kg_to_amps; // Change force slowly 1 Kg/sec
-	cfg->brake_current = 0.3 * cfg->kg_to_amps;
-	cfg->slowing_current = 0.5 * cfg->kg_to_amps;
-	cfg->manual_brake_current = 1 * cfg->kg_to_amps;
-	cfg->unwinding_current = 0.4 * cfg->kg_to_amps;
-	cfg->rewinding_current = 0.6 * cfg->kg_to_amps;
-	cfg->slow_max_current = 1 * cfg->kg_to_amps;
-	cfg->manual_slow_max_current = 1 * cfg->kg_to_amps;
-	cfg->manual_slow_speed_up_current = 0.4 * cfg->kg_to_amps;
+	cfg->amps_per_kg = 7;					  // 7 Amps for 1Kg force
+	cfg->amps_per_sec = 1 * cfg->amps_per_kg; // Change force slowly 1 Kg/sec
+	cfg->brake_current = 0.3 * cfg->amps_per_kg;
+	cfg->slowing_current = 0.5 * cfg->amps_per_kg;
+	cfg->manual_brake_current = 1 * cfg->amps_per_kg;
+	cfg->unwinding_current = 0.4 * cfg->amps_per_kg;
+	cfg->rewinding_current = 0.6 * cfg->amps_per_kg;
+	cfg->slow_max_current = 1 * cfg->amps_per_kg;
+	cfg->manual_slow_max_current = 1 * cfg->amps_per_kg;
+	cfg->manual_slow_speed_up_current = 0.4 * cfg->amps_per_kg;
 
 	// Pull settings
-	cfg->pull_current = 0.9 * cfg->kg_to_amps;
+	cfg->pull_current = 0.9 * cfg->amps_per_kg;
 	cfg->pre_pull_k = 30 / 100.0;
 	cfg->takeoff_pull_k = 60 / 100.0;
 	cfg->fast_pull_k = 120 / 100.0;
@@ -1369,8 +1369,8 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 			commands_printf(
 				"SLOW: speed %.1fms (%.0f ERPM), -- slow pulling too high %.1fKg (%.1fA) is more %.1fKg (%.1fA)",
 				(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
-				(double)(cur_current / config.kg_to_amps), (double)cur_current,
-				(double)(config.slow_max_current / config.kg_to_amps), (double)config.slow_max_current);
+				(double)(cur_current / config.amps_per_kg), (double)cur_current,
+				(double)(config.slow_max_current / config.amps_per_kg), (double)config.slow_max_current);
 
 			brake_or_unwinding(cur_tac, abs_tac);
 			break;
@@ -1391,7 +1391,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 			commands_printf("SLOW: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), pull %.1fKg (%.1fA)",
 							(double)tac_steps_to_meters(cur_tac), cur_tac,
 							(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
-							(double)(cur_current / config.kg_to_amps), (double)cur_current);
+							(double)(cur_current / config.amps_per_kg), (double)cur_current);
 		}
 		break;
 	case MANUAL_SLOW_SPEED_UP:
@@ -1483,8 +1483,8 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 			commands_printf(
 				"MANUAL_SLOW: speed %.1fms (%.0f ERPM), -- slow pulling too high %.1fKg (%.1fA) is more %.1fKg (%.1fA)",
 				(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
-				(double)(cur_current / config.kg_to_amps), (double)cur_current,
-				(double)(config.manual_slow_max_current / config.kg_to_amps), (double)config.manual_slow_max_current);
+				(double)(cur_current / config.amps_per_kg), (double)cur_current,
+				(double)(config.manual_slow_max_current / config.amps_per_kg), (double)config.manual_slow_max_current);
 
 			brake_or_manual_brake(cur_tac, abs_tac);
 			break;
@@ -1505,7 +1505,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 			commands_printf("MANUAL_SLOW: pos %.2fm (%d steps), speed: %.1fms (%.0f ERPM), pull: %.1fKg (%.1fA)",
 							(double)tac_steps_to_meters(cur_tac), cur_tac,
 							(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
-							(double)(cur_current / config.kg_to_amps), (double)cur_current);
+							(double)(cur_current / config.amps_per_kg), (double)cur_current);
 		}
 
 		break;
@@ -1531,8 +1531,8 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 			commands_printf(
 				"MANUAL_SLOW_BACK: speed %.1fms (%.0f ERPM), -- slow pulling too high %.1fKg (%.1fA) is more %.1fKg (%.1fA)",
 				(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
-				(double)(cur_current / config.kg_to_amps), (double)cur_current,
-				(double)(config.manual_slow_max_current / config.kg_to_amps),
+				(double)(cur_current / config.amps_per_kg), (double)cur_current,
+				(double)(config.manual_slow_max_current / config.amps_per_kg),
 				(double)config.manual_slow_max_current);
 
 			brake_or_manual_brake(cur_tac, abs_tac);
@@ -1545,7 +1545,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 			commands_printf("MANUAL_SLOW_BACK: pos %.2fm (%d steps), speed: %.1fms (%.0f ERPM), pull: %.1fKg (%.1fA)",
 							(double)tac_steps_to_meters(cur_tac), cur_tac,
 							(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
-							(double)(cur_current / config.kg_to_amps), (double)cur_current);
+							(double)(cur_current / config.amps_per_kg), (double)cur_current);
 		}
 
 		break;
@@ -1639,32 +1639,32 @@ inline static void print_conf(const int cur_tac)
 	commands_printf("  gear ratio: %.5f", (double)mc_conf->si_gear_ratio);
 
 	commands_printf("SkyPUFF configuration v%d:", skypuff_config_version);
-	commands_printf("  amperes per 1kg force: %.1fAKg", (double)config.kg_to_amps);
-	commands_printf("  force changing speed: %.2fKg/sec (%.1fA/sec)", (double)(config.amps_per_sec / config.kg_to_amps), (double)config.amps_per_sec);
+	commands_printf("  amperes per 1kg force: %.1fAKg", (double)config.amps_per_kg);
+	commands_printf("  force changing speed: %.2fKg/sec (%.1fA/sec)", (double)(config.amps_per_sec / config.amps_per_kg), (double)config.amps_per_sec);
 	commands_printf("  rope length: %.2fm (%d steps)", (double)tac_steps_to_meters(config.rope_length), config.rope_length);
 	commands_printf("  braking range: %.2fm (%d steps)", (double)tac_steps_to_meters(config.braking_length), config.braking_length);
 	commands_printf("  passive braking range: %.2fm (%d steps)", (double)tac_steps_to_meters(config.passive_braking_length), config.passive_braking_length);
 	commands_printf("  slowing range: %.2fm (%d steps)", (double)tac_steps_to_meters(config.slowing_length), config.slowing_length);
 	commands_printf("  rewinding trigger range: %.2fm (%d steps)", (double)tac_steps_to_meters(config.rewinding_trigger_length), config.rewinding_trigger_length);
 	commands_printf("  unwinding trigger range: %.2fm (%d steps)", (double)tac_steps_to_meters(config.unwinding_trigger_length), config.unwinding_trigger_length);
-	commands_printf("  brake force: %.2fkg (%.1fA)", (double)(config.brake_current / config.kg_to_amps), (double)config.brake_current);
-	commands_printf("  manual brake force: %.2fkg (%.1fA)", (double)(config.manual_brake_current / config.kg_to_amps), (double)config.manual_brake_current);
-	commands_printf("  unwinding force: %.2fkg (%.1fA)", (double)(config.unwinding_current / config.kg_to_amps), (double)config.unwinding_current);
-	commands_printf("  rewinding force: %.2fkg (%.1fA)", (double)(config.rewinding_current / config.kg_to_amps), (double)config.rewinding_current);
-	commands_printf("  slowing brake force: %.2fkg (%.1fA)", (double)(config.slowing_current / config.kg_to_amps), (double)config.slowing_current);
+	commands_printf("  brake force: %.2fkg (%.1fA)", (double)(config.brake_current / config.amps_per_kg), (double)config.brake_current);
+	commands_printf("  manual brake force: %.2fkg (%.1fA)", (double)(config.manual_brake_current / config.amps_per_kg), (double)config.manual_brake_current);
+	commands_printf("  unwinding force: %.2fkg (%.1fA)", (double)(config.unwinding_current / config.amps_per_kg), (double)config.unwinding_current);
+	commands_printf("  rewinding force: %.2fkg (%.1fA)", (double)(config.rewinding_current / config.amps_per_kg), (double)config.rewinding_current);
+	commands_printf("  slowing brake force: %.2fkg (%.1fA)", (double)(config.slowing_current / config.amps_per_kg), (double)config.slowing_current);
 	commands_printf("  slow speed: %.1fms (%.0f ERPM)", (double)erpm_to_ms(config.slow_erpm), (double)config.slow_erpm);
-	commands_printf("  maximum slow force: %.2fkg (%.1fA)", (double)(config.slow_max_current / config.kg_to_amps), (double)config.slow_max_current);
-	commands_printf("  manual slow max force: %.2fkg (%.1fA)", (double)(config.manual_slow_max_current / config.kg_to_amps), (double)config.manual_slow_max_current);
-	commands_printf("  manual slow speed up force: %.2fkg (%.1fA)", (double)(config.manual_slow_speed_up_current / config.kg_to_amps), (double)config.manual_slow_speed_up_current);
+	commands_printf("  maximum slow force: %.2fkg (%.1fA)", (double)(config.slow_max_current / config.amps_per_kg), (double)config.slow_max_current);
+	commands_printf("  manual slow max force: %.2fkg (%.1fA)", (double)(config.manual_slow_max_current / config.amps_per_kg), (double)config.manual_slow_max_current);
+	commands_printf("  manual slow speed up force: %.2fkg (%.1fA)", (double)(config.manual_slow_speed_up_current / config.amps_per_kg), (double)config.manual_slow_speed_up_current);
 	commands_printf("  manual slow speed: %.1fms (%.0f ERPM)", (double)erpm_to_ms(config.manual_slow_erpm), (double)config.manual_slow_erpm);
 
-	commands_printf("  pull force: %.2fkg (%.1fA)", (double)(config.pull_current / config.kg_to_amps), (double)config.pull_current);
+	commands_printf("  pull force: %.2fkg (%.1fA)", (double)(config.pull_current / config.amps_per_kg), (double)config.pull_current);
 	commands_printf("  takeoff trigger range: %.2fm (%d steps)", (double)tac_steps_to_meters(config.takeoff_trigger_length), config.takeoff_trigger_length);
 	commands_printf("  pre pull timeout: %.1fs (%d loops)", (double)config.pre_pull_timeout / (double)1000.0, config.pre_pull_timeout);
 	commands_printf("  takeoff period: %.1fs (%d loops)", (double)config.takeoff_period / (double)1000.0, config.takeoff_period);
-	commands_printf("  pre pull percent: %.0f%% (%.2fkg, %.5f)", (double)config.pre_pull_k * (double)100.0, (double)(config.pull_current / config.kg_to_amps * config.pre_pull_k), (double)config.pre_pull_k);
-	commands_printf("  takeoff pull percent: %.0f%% (%.2fkg, %.5f)", (double)config.takeoff_pull_k * (double)100.0, (double)(config.pull_current / config.kg_to_amps * config.takeoff_pull_k), (double)config.takeoff_pull_k);
-	commands_printf("  fast pull percent: %.0f%% (%.2fkg, %.5f)", (double)config.fast_pull_k * (double)100.0, (double)(config.pull_current / config.kg_to_amps * config.fast_pull_k), (double)config.fast_pull_k);
+	commands_printf("  pre pull percent: %.0f%% (%.2fkg, %.5f)", (double)config.pre_pull_k * (double)100.0, (double)(config.pull_current / config.amps_per_kg * config.pre_pull_k), (double)config.pre_pull_k);
+	commands_printf("  takeoff pull percent: %.0f%% (%.2fkg, %.5f)", (double)config.takeoff_pull_k * (double)100.0, (double)(config.pull_current / config.amps_per_kg * config.takeoff_pull_k), (double)config.takeoff_pull_k);
+	commands_printf("  fast pull percent: %.0f%% (%.2fkg, %.5f)", (double)config.fast_pull_k * (double)100.0, (double)(config.pull_current / config.amps_per_kg * config.fast_pull_k), (double)config.fast_pull_k);
 
 	commands_printf("SkyPUFF state:");
 	commands_printf("  state %s, current position: %.2fm (%d steps)", state_str(state), (double)tac_steps_to_meters(cur_tac), cur_tac);
@@ -1680,7 +1680,7 @@ inline static void buffer_append_drive_setttings(uint8_t *buffer, int32_t *ind)
 
 inline static void buffer_append_skypuff_settings(uint8_t *buffer, int32_t *ind)
 {
-	buffer_append_float32_auto(buffer, config.kg_to_amps, ind);
+	buffer_append_float32_auto(buffer, config.amps_per_kg, ind);
 	buffer_append_float32_auto(buffer, config.amps_per_sec, ind);
 	buffer_append_int32(buffer, config.rope_length, ind);
 	buffer_append_int32(buffer, config.braking_length, ind);
@@ -1821,7 +1821,7 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 
 		break;
 	case SET_PULL_FORCE:
-		// We need correct config.kg_to_amps and drive settings
+		// We need correct config.amps_per_kg and drive settings
 		if (state == UNINITIALIZED)
 		{
 			commands_printf("%s: -- Can't update pull force from UNITIALIZED", state_str(state));
@@ -1829,7 +1829,7 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 		}
 
 		// Calculate amperes from Kg
-		float pull_current = config.kg_to_amps * terminal_pull_kg;
+		float pull_current = config.amps_per_kg * terminal_pull_kg;
 
 		if (is_pull_out_of_limits("pull_current",
 								  pull_current,
