@@ -67,6 +67,8 @@
 	Examples:
 		UNITIALIZED: -- CONFIGURATION IS OUT OF LIMITS -- Braking current 0.0A is out of limits (0.5, 20.0)
 		BRAKING: pos 34.3m (3432 steps), pull 2.30Kg (6.2A)
+
+	On double '--' UI will show message dialog.
 */
 
 const int short_print_delay = 500; // 0.5s, measured in control loop counts
@@ -74,6 +76,8 @@ const int long_print_delay = 3000;
 const int smooth_max_step_delay = 100;
 
 const char *limits_wrn = "-- CONFIGURATION IS OUT OF LIMITS --";
+
+const uint32_t received_settings_v1_length = 110;
 
 // Threads
 static THD_FUNCTION(my_thread, arg);
@@ -105,9 +109,10 @@ static int state_start_time;   // Count the duration of state
 static float terminal_pull_kg; // Pulling force to set
 static volatile int alive_inc; // Communication timeout increment from terminal thread
 
-static skypuff_state state;
+static volatile skypuff_state state; // Readable from commands threads too
 static skypuff_config config;
-static skypuff_config set_config; // updates from terminal thread;
+static skypuff_config set_config; // Updates from terminal thread
+static skypuff_drive set_drive;   // Update mc_configuration additional drive settings
 
 // Terminal thread commands
 typedef enum
@@ -725,18 +730,27 @@ inline static bool is_speed_out_of_limits(const char *name,
 	return true;
 }
 
-static bool is_config_out_of_limits(const skypuff_config *conf)
+static bool is_drive_config_out_of_limits(const skypuff_drive *drv)
 {
-	// Check mc_conf also
-	return is_int_out_of_limits("motor_poles", "p", mc_conf->si_motor_poles,
+	if (drv->motor_poles % 2)
+	{
+		commands_printf("%s: %s motor_poles: %dp must be odd",
+						state_str(state), limits_wrn, drv->motor_poles);
+		return true;
+	}
+
+	return is_int_out_of_limits("motor_poles", "p", drv->motor_poles,
 								min_drive_limits.motor_poles, max_drive_limits.motor_poles) ||
-		   is_float_out_of_limits("wheel_diameter", "mm", mc_conf->si_wheel_diameter * (float)1000,
+		   is_float_out_of_limits("wheel_diameter", "mm", drv->wheel_diameter * (float)1000,
 								  min_drive_limits.wheel_diameter * (float)1000.0,
 								  max_drive_limits.wheel_diameter * (float)1000.0) ||
-		   is_float_out_of_limits("gear_ratio", "turn(s)", mc_conf->si_gear_ratio,
-								  min_drive_limits.gear_ratio, max_drive_limits.gear_ratio) ||
-		   // finally our conf
-		   is_float_out_of_limits("amps_per_kg", "KgA", conf->amps_per_kg,
+		   is_float_out_of_limits("gear_ratio", "turn(s)", drv->gear_ratio,
+								  min_drive_limits.gear_ratio, max_drive_limits.gear_ratio);
+}
+
+static bool is_config_out_of_limits(const skypuff_config *conf)
+{
+	return is_float_out_of_limits("amps_per_kg", "KgA", conf->amps_per_kg,
 								  min_config.amps_per_kg, max_config.amps_per_kg) ||
 		   is_float_out_of_limits("amps_per_sec", "A/Sec", conf->amps_per_sec,
 								  min_config.amps_per_sec, max_config.amps_per_sec) ||
@@ -1017,11 +1031,61 @@ static void set_example_conf(skypuff_config *cfg)
 	cfg->takeoff_period = 5 * 1000;
 }
 
+// Deserialize and ask control loop thread to apply
 void custom_app_data_handler(unsigned char *data, unsigned int len)
 {
-	(void)data;
-	commands_printf("%s: -- custom_app_data_handler(): %u bytes received",
-					state_str(state), len);
+	int32_t ind = 0;
+	if (len != received_settings_v1_length)
+	{
+		commands_printf("%s: -- Can't decode settings -- Received %u bytes, expecting %u.",
+						state_str(state), len, received_settings_v1_length);
+		return;
+	}
+
+	if (data[ind] != skypuff_config_version)
+	{
+		commands_printf("%s: -- Can't decode settings -- Received version %u, expecting %u.",
+						state_str(state), (unsigned int)data[ind], (unsigned int)skypuff_config_version);
+		return;
+	}
+
+	ind++; // Skip version byte
+
+	set_drive.motor_poles = data[ind++];
+	set_drive.gear_ratio = buffer_get_float32_auto(data, &ind);
+	set_drive.wheel_diameter = buffer_get_float32_auto(data, &ind);
+
+	set_config.amps_per_kg = buffer_get_float32_auto(data, &ind);
+	set_config.amps_per_sec = buffer_get_float32_auto(data, &ind);
+	set_config.rope_length = buffer_get_int32(data, &ind);
+	set_config.braking_length = buffer_get_int32(data, &ind);
+	set_config.passive_braking_length = buffer_get_int32(data, &ind);
+
+	set_config.slowing_length = buffer_get_int32(data, &ind);
+	set_config.slow_erpm = buffer_get_float32_auto(data, &ind);
+	set_config.rewinding_trigger_length = buffer_get_int32(data, &ind);
+	set_config.unwinding_trigger_length = buffer_get_int32(data, &ind);
+	set_config.pull_current = buffer_get_float32_auto(data, &ind);
+
+	set_config.pre_pull_k = buffer_get_float32_auto(data, &ind);
+	set_config.takeoff_pull_k = buffer_get_float32_auto(data, &ind);
+	set_config.fast_pull_k = buffer_get_float32_auto(data, &ind);
+	set_config.takeoff_trigger_length = buffer_get_int32(data, &ind);
+	set_config.pre_pull_timeout = buffer_get_int32(data, &ind);
+
+	set_config.takeoff_period = buffer_get_int32(data, &ind);
+	set_config.brake_current = buffer_get_float32_auto(data, &ind);
+	set_config.slowing_current = buffer_get_float32_auto(data, &ind);
+	set_config.manual_brake_current = buffer_get_float32_auto(data, &ind);
+	set_config.unwinding_current = buffer_get_float32_auto(data, &ind);
+
+	set_config.rewinding_current = buffer_get_float32_auto(data, &ind);
+	set_config.slow_max_current = buffer_get_float32_auto(data, &ind);
+	set_config.manual_slow_max_current = buffer_get_float32_auto(data, &ind);
+	set_config.manual_slow_speed_up_current = buffer_get_float32_auto(data, &ind);
+	set_config.manual_slow_erpm = buffer_get_float32_auto(data, &ind);
+
+	terminal_command = SET_CONF;
 }
 
 // Called when the custom application is started. Start our
@@ -1047,9 +1111,15 @@ void app_custom_start(void)
 	stop_now = false;
 
 	smooth_motor_release();
+
 	read_config_from_eeprom(&config);
 
-	state = is_config_out_of_limits(&config) ? UNINITIALIZED : BRAKING;
+	// Check system drive settings and our config for limits
+	set_drive.motor_poles = mc_conf->si_motor_poles;
+	set_drive.gear_ratio = mc_conf->si_gear_ratio;
+	set_drive.wheel_diameter = mc_conf->si_wheel_diameter;
+
+	state = is_drive_config_out_of_limits(&set_drive) || is_config_out_of_limits(&config) ? UNINITIALIZED : BRAKING;
 
 	commands_set_app_data_handler(custom_app_data_handler);
 
@@ -1063,8 +1133,8 @@ void app_custom_start(void)
 		"Print configuration",
 		"", terminal_print_conf);
 	terminal_register_command_callback(
-		"custom_app_data",
-		"Send SkuPUFF serialized COMM_CUSTOM_APP_DATA state and settings",
+		"get_conf",
+		"Send SkuPUFF serialized state and settings in the COMM_CUSTOM_APP_DATA payload",
 		"", terminal_get_conf);
 	terminal_register_command_callback(
 		"example_conf",
@@ -1940,8 +2010,23 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 		case UNINITIALIZED:
 		case BRAKING:
 		case MANUAL_BRAKING:
-			if (is_config_out_of_limits(&set_config))
+			if (is_drive_config_out_of_limits(&set_drive) || is_config_out_of_limits(&set_config))
 				break;
+
+			// mc_configuration changed?
+			if (set_drive.motor_poles != mc_conf->si_motor_poles ||
+				set_drive.gear_ratio != mc_conf->si_gear_ratio ||
+				set_drive.wheel_diameter != mc_conf->si_wheel_diameter)
+			{
+				mc_configuration new_mc_conf = *mc_conf;
+
+				new_mc_conf.si_motor_poles = set_drive.motor_poles;
+				new_mc_conf.si_gear_ratio = set_drive.gear_ratio;
+				new_mc_conf.si_wheel_diameter = set_drive.wheel_diameter;
+
+				mc_interface_set_configuration(&new_mc_conf);
+				mc_conf = mc_interface_get_configuration();
+			}
 
 			// Use braking_length from received config
 			if (abs_tac > set_config.braking_length)
@@ -1951,6 +2036,7 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 			}
 
 			config = set_config;
+
 			store_config_to_eeprom(&config);
 
 			commands_printf("%s: -- Configuration set", state_str(state));

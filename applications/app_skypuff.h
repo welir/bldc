@@ -25,7 +25,8 @@
 
 // Must be increased on skypuff_config struct update
 // Don't forget to update HW limits structs, serialization and checking functions
-static const uint8_t skypuff_config_version = 1;
+// Sometimes this have to be changed to existing serialization solution
+const uint8_t skypuff_config_version = 1;
 
 // Winch FSM
 typedef enum
