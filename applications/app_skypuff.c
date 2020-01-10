@@ -233,7 +233,7 @@ static const skypuff_config max_config = {
 	.braking_length = 100 * 120,
 	.passive_braking_length = 5000 * 120,
 	.slowing_length = 100 * 120,
-	.slow_erpm = 5000,
+	.slow_erpm = 30000,
 	.rewinding_trigger_length = 50 * 120,
 	.unwinding_trigger_length = 10 * 120,
 	.pull_current = 600, // Believe in gliders
@@ -251,7 +251,7 @@ static const skypuff_config max_config = {
 	.slow_max_current = 50,
 	.manual_slow_max_current = 50,
 	.manual_slow_speed_up_current = 50,
-	.manual_slow_erpm = 8000,
+	.manual_slow_erpm = 40000,
 };
 
 inline static const char *motor_mode_str(smooth_motor_mode m)
@@ -2024,6 +2024,8 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 				new_mc_conf.si_gear_ratio = set_drive.gear_ratio;
 				new_mc_conf.si_wheel_diameter = set_drive.wheel_diameter;
 
+				// TODO: move this code into separate function and use from commands.c
+				conf_general_store_mc_configuration(&new_mc_conf);
 				mc_interface_set_configuration(&new_mc_conf);
 				mc_conf = mc_interface_get_configuration();
 			}
@@ -2039,7 +2041,7 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 
 			store_config_to_eeprom(&config);
 
-			commands_printf("%s: -- Configuration set", state_str(state));
+			commands_printf("%s: -- Configuration are set -- Happy puffs!", state_str(state));
 
 			// Forget about UNITIALIZED :)
 			if (state == UNINITIALIZED)
