@@ -672,7 +672,7 @@ inline static bool is_int_out_of_limits(const char *name, const char *units,
 	if (val >= min && val <= max)
 		return false;
 
-	commands_printf("%s: %s %s: %d%s is out of limits [%d, %d]",
+	commands_printf("%s: %s %s: %d %s is out of limits [%d, %d]",
 					state_str(state), limits_wrn, name, val, units, min, max);
 	return true;
 }
@@ -790,15 +790,15 @@ static bool is_config_out_of_limits(const skypuff_config *conf)
 								 min_config.manual_slow_max_current, max_config.manual_slow_max_current) ||
 		   is_pull_out_of_limits("manual_slow_speed_up_current", conf->manual_slow_speed_up_current,
 								 min_config.manual_slow_speed_up_current, max_config.manual_slow_speed_up_current) ||
-		   is_float_out_of_limits("pre_pull_k", "%%", conf->pre_pull_k * (float)100,
+		   is_float_out_of_limits("pre_pull_k", "%", conf->pre_pull_k * (float)100,
 								  min_config.pre_pull_k * (float)100, max_config.pre_pull_k * (float)100) ||
-		   is_float_out_of_limits("takeoff_pull_k", "%%", conf->takeoff_pull_k * (float)100,
+		   is_float_out_of_limits("takeoff_pull_k", "%", conf->takeoff_pull_k * (float)100,
 								  min_config.takeoff_pull_k * (float)100, max_config.takeoff_pull_k * (float)100) ||
-		   is_float_out_of_limits("fast_pull_k", "%%", conf->fast_pull_k * (float)100,
+		   is_float_out_of_limits("fast_pull_k", "%", conf->fast_pull_k * (float)100,
 								  min_config.fast_pull_k * (float)100, max_config.fast_pull_k * (float)100) ||
-		   is_int_out_of_limits("pre_pull_timeout", "millis", conf->pre_pull_timeout,
+		   is_int_out_of_limits("pre_pull_timeout", "milliseconds", conf->pre_pull_timeout,
 								min_config.pre_pull_timeout, max_config.pre_pull_timeout) ||
-		   is_int_out_of_limits("takeoff_period", "millis", conf->takeoff_period,
+		   is_int_out_of_limits("takeoff_period", "milliseconds", conf->takeoff_period,
 								min_config.takeoff_period, max_config.takeoff_period);
 }
 
@@ -1732,9 +1732,9 @@ inline static void print_conf(const int cur_tac)
 	commands_printf("  takeoff trigger range: %.2fm (%d steps)", (double)tac_steps_to_meters(config.takeoff_trigger_length), config.takeoff_trigger_length);
 	commands_printf("  pre pull timeout: %.1fs (%d loops)", (double)config.pre_pull_timeout / (double)1000.0, config.pre_pull_timeout);
 	commands_printf("  takeoff period: %.1fs (%d loops)", (double)config.takeoff_period / (double)1000.0, config.takeoff_period);
-	commands_printf("  pre pull percent: %.0f%% (%.2fkg, %.5f)", (double)config.pre_pull_k * (double)100.0, (double)(config.pull_current / config.amps_per_kg * config.pre_pull_k), (double)config.pre_pull_k);
-	commands_printf("  takeoff pull percent: %.0f%% (%.2fkg, %.5f)", (double)config.takeoff_pull_k * (double)100.0, (double)(config.pull_current / config.amps_per_kg * config.takeoff_pull_k), (double)config.takeoff_pull_k);
-	commands_printf("  fast pull percent: %.0f%% (%.2fkg, %.5f)", (double)config.fast_pull_k * (double)100.0, (double)(config.pull_current / config.amps_per_kg * config.fast_pull_k), (double)config.fast_pull_k);
+	commands_printf("  pre pull coefficient: %.0f%% (%.2fkg, %.5f)", (double)config.pre_pull_k * (double)100.0, (double)(config.pull_current / config.amps_per_kg * config.pre_pull_k), (double)config.pre_pull_k);
+	commands_printf("  takeoff pull coefficient: %.0f%% (%.2fkg, %.5f)", (double)config.takeoff_pull_k * (double)100.0, (double)(config.pull_current / config.amps_per_kg * config.takeoff_pull_k), (double)config.takeoff_pull_k);
+	commands_printf("  fast pull coefficient: %.0f%% (%.2fkg, %.5f)", (double)config.fast_pull_k * (double)100.0, (double)(config.pull_current / config.amps_per_kg * config.fast_pull_k), (double)config.fast_pull_k);
 
 	commands_printf("SkyPUFF state:");
 	commands_printf("  state %s, current position: %.2fm (%d steps)", state_str(state), (double)tac_steps_to_meters(cur_tac), cur_tac);
