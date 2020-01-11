@@ -1889,14 +1889,7 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 		// Just warning for terminal mode
 		if (loop_step >= alive_until)
 		{
-			commands_printf("%s: -- Update timeout with 'alive <period>' before switching to UNWINDING",
-							state_str(state));
-			break;
-		}
-
-		if (abs_tac <= config.braking_length)
-		{
-			commands_printf("%s: -- Please unwind from braking range",
+			commands_printf("%s: -- Can't switch to UNWINDING -- Update timeout with 'alive <period>' before",
 							state_str(state));
 			break;
 		}
@@ -1904,7 +1897,7 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 		// Possible from manual braking or pulling states
 		switch (state)
 		{
-		case BRAKING:
+		case BRAKING_EXTENSION:
 		case MANUAL_BRAKING:
 		case PRE_PULL:
 		case TAKEOFF_PULL:
@@ -1914,7 +1907,7 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 			break;
 
 		default:
-			commands_printf("%s: -- Switch to UNWINDING only possible from MANUAL_BRAKING, PRE_PULL, TAKEOFF_PULL, PULL, FAST_PULL", state_str(state));
+			commands_printf("%s: -- Can't switch to UNWINDING -- Only possible from BRAKING_EXTENSION, MANUAL_BRAKING, PRE_PULL, TAKEOFF_PULL, PULL, FAST_PULL", state_str(state));
 			break;
 		}
 
@@ -1963,47 +1956,36 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 
 		break;
 	case SET_PRE_PULL:
-		if (abs_tac <= config.braking_length)
-		{
-			commands_printf("%s: -- Please unwind from braking range",
-							state_str(state));
-			break;
-		}
-
 		switch (state)
 		{
-		case BRAKING:
+		case BRAKING_EXTENSION:
 		case UNWINDING:
 		case REWINDING:
 			pre_pull(cur_tac);
 			break;
 		default:
-			commands_printf("%s: -- PRE_PULL could only be set from UNWINDING or REWINDING", state_str(state));
+			commands_printf("%s: Can't switch to PRE_PULL -- Only possible from BRAKING_EXTENSION, UNWINDING or REWINDING", state_str(state));
 			break;
 		}
 
 		break;
 	case SET_TAKEOFF_PULL:
-		if (state != PRE_PULL)
+		switch (state)
 		{
-			commands_printf("%s: -- TAKEOFF_PULL could only be set from PRE_PULL", state_str(state));
+		case PRE_PULL:
+			takeoff_pull(cur_tac);
+			break;
+
+		default:
+			commands_printf("%s: Can't switch to TAKEOFF_PULL -- Only possible from PRE_PULL", state_str(state));
 			break;
 		}
-
-		takeoff_pull(cur_tac);
 
 		break;
 	case SET_PULL:
-		if (abs_tac <= config.braking_length)
-		{
-			commands_printf("%s: -- Please unwind from braking range",
-							state_str(state));
-			break;
-		}
-
 		switch (state)
 		{
-		case BRAKING:
+		case BRAKING_EXTENSION:
 		case TAKEOFF_PULL:
 		case UNWINDING:
 		case REWINDING:
@@ -2011,18 +1993,21 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 			break;
 
 		default:
-			commands_printf("%s: -- PULL could only be set from TAKEOFF_PULL or UNWINDING/REWINDING", state_str(state));
+			commands_printf("%s: Can't switch to PULL -- Only possible from BRAKING_EXTENSION, TAKEOFF_PULL, UNWINDING or REWINDING", state_str(state));
 		}
 
 		break;
 	case SET_FAST_PULL:
-		if (state != PULL)
+		switch (state)
 		{
-			commands_printf("%s: -- FAST_PULL could only be set from PULL", state_str(state));
+		case PULL:
+			fast_pull(cur_tac);
+			break;
+
+		default:
+			commands_printf("%s: Can't switch to FAST_PULL -- Only possible from PULL", state_str(state));
 			break;
 		}
-
-		fast_pull(cur_tac);
 
 		break;
 	case PRINT_CONF:
@@ -2038,6 +2023,7 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 		{
 		case UNINITIALIZED:
 		case BRAKING:
+		case BRAKING_EXTENSION:
 		case MANUAL_BRAKING:
 			if (is_drive_config_out_of_limits(&set_drive) || is_config_out_of_limits(&set_config))
 				break;
@@ -2078,7 +2064,7 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 
 			break;
 		default:
-			commands_printf("%s: -- Configuration could be updated in UNITIALIZED or BRAKING/MANUAL_BRAKING states",
+			commands_printf("%s: -- Can't set configuration -- Only possible from UNITIALIZED or any BRAKING states",
 							state_str(state));
 		}
 
