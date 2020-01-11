@@ -68,7 +68,7 @@
 		UNITIALIZED: -- CONFIGURATION IS OUT OF LIMITS -- Braking current 0.0A is out of limits (0.5, 20.0)
 		BRAKING: pos 34.3m (3432 steps), pull 2.30Kg (6.2A)
 
-	On double '--' UI will show message dialog.
+	On double '--' UI will show message dialog with first payload as title and second as text.
 */
 
 const int short_print_delay = 500; // 0.5s, measured in control loop counts
@@ -1844,6 +1844,7 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 		{
 		case UNINITIALIZED:
 		case BRAKING:
+		case BRAKING_EXTENSION:
 		case MANUAL_BRAKING:
 			mc_interface_get_tachometer_value(true);
 			prev_abs_tac = 0;
@@ -1851,38 +1852,59 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 			break;
 
 		default:
-			commands_printf("%s: -- Zero could be set from UNITIALIZED, BRAKING or MANUAL_BRAKING",
+			commands_printf("%s: -- Can't set zero -- Only possible from UNITIALIZED or BRAKING states",
 							state_str(state));
 			break;
 		}
 		break;
 	case SET_MANUAL_BRAKING:
-		if (state != UNINITIALIZED)
+		switch (state)
+		{
+		case UNINITIALIZED:
+			commands_printf("%s: -- Can't switch to MANUAL_BRAKING -- Not possible from UNITIALIZED", state_str(state));
+			break;
+		default:
 			manual_brake(cur_tac);
-		else
-			commands_printf("%s: -- Can't switch to MANUAL_BRAKING from UNITIALIZED", state_str(state));
+			break;
+		}
 
 		break;
 	case SET_MANUAL_SLOW:
-		if (abs_tac <= config.braking_length)
-			commands_printf("%s: -- MANUAL_SLOW could be only set after braking zone %.1fm (%d steps)",
-							state_str(state), (double)tac_steps_to_meters(config.braking_length),
-							config.braking_length);
-		else if (state == MANUAL_BRAKING)
+		switch (state)
+		{
+		case MANUAL_BRAKING:
+			if (abs_tac <= config.braking_length)
+			{
+				commands_printf("%s: -- Can't switch to MANUAL_SLOW -- Please unwind from braking zone %.1fm (%d steps)",
+								state_str(state), (double)tac_steps_to_meters(config.braking_length),
+								config.braking_length);
+				break;
+			}
 			manual_slow_speed_up(cur_tac);
-		else
-			commands_printf("%s: -- MANUAL_SLOW transition only possible from MANUAL_BRAKING", state_str(state));
+			break;
+		default:
+			commands_printf("%s: -- Can't switch to MANUAL_SLOW -- Only possible from MANUAL_BRAKING", state_str(state));
+			break;
+		}
 
 		break;
 	case SET_MANUAL_SLOW_BACK:
-		if (abs_tac <= config.braking_length)
-			commands_printf("%s: -- MANUAL_SLOW_BACK could be only set after braking zone %.1fm (%d steps)",
-							state_str(state), (double)tac_steps_to_meters(config.braking_length),
-							config.braking_length);
-		else if (state == MANUAL_BRAKING)
+		switch (state)
+		{
+		case MANUAL_BRAKING:
+			if (abs_tac <= config.braking_length)
+			{
+				commands_printf("%s: -- Can't switch to MANUAL_SLOW_BACK -- Please unwind from braking zone %.1fm (%d steps)",
+								state_str(state), (double)tac_steps_to_meters(config.braking_length),
+								config.braking_length);
+				break;
+			}
 			manual_slow_back_speed_up(cur_tac);
-		else
-			commands_printf("%s: -- MANUAL_SLOW_BACK transition only possible from MANUAL_BRAKING", state_str(state));
+			break;
+		default:
+			commands_printf("%s: -- Can't switch to MANUAL_SLOW_BACK -- Only possible from MANUAL_BRAKING", state_str(state));
+			break;
+		}
 
 		break;
 	case SET_UNWINDING:
@@ -1931,7 +1953,7 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 
 		config.pull_current = pull_current;
 
-		commands_printf("%s: -- Force %.2fKg (%.1fA) set",
+		commands_printf("%s: -- %.2fKg (%.1fA) is set",
 						state_str(state), (double)terminal_pull_kg, (double)config.pull_current);
 
 		// Update pull force now?
