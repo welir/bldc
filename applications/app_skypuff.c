@@ -66,7 +66,7 @@
 
 	Examples:
 		UNITIALIZED: -- CONFIGURATION IS OUT OF LIMITS -- Braking current 0.0A is out of limits (0.5, 20.0)
-		BRAKING: pos 34.3m (3432 steps), pull 2.30Kg (6.2A)
+		BRAKING: pos 0.00m (0 steps), speed: -0.0ms (-0 ERPM), braking 1.0Kg (7.0A)
 
 	On double '--' UI will show message dialog with first payload as title and second as text.
 */
@@ -839,7 +839,7 @@ inline static void brake_state(const int cur_tac, const skypuff_state new_state,
 		float erpm = mc_interface_get_rpm();
 		prev_print = loop_step;
 		prev_printed_tac = cur_tac;
-		commands_printf("%s: pos %.2fm (%d steps), speed: %.1fms (%.0f ERPM), braking %.1fKg (%.1fA)%s",
+		commands_printf("%s: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), braking %.1fKg (%.1fA)%s",
 						state_str(new_state),
 						(double)tac_steps_to_meters(cur_tac), cur_tac,
 						(double)erpm_to_ms(erpm), (double)erpm,
@@ -886,7 +886,7 @@ inline static void pull_state(const int cur_tac, const float pull_current, const
 
 	prev_print = loop_step;
 	prev_printed_tac = cur_tac;
-	commands_printf("%s: pos: %.2fm (%d steps), pull: %.1fKg (%.1fA)%s",
+	commands_printf("%s: pos %.2fm (%d steps), pull %.1fKg (%.1fA)%s",
 					state_str(state),
 					(double)tac_steps_to_meters(cur_tac), cur_tac,
 					(double)(current / config.amps_per_kg), (double)current,
@@ -951,7 +951,7 @@ inline static void slowing(const int cur_tac, const float erpm)
 
 	prev_print = loop_step;
 	prev_printed_tac = cur_tac;
-	commands_printf("%s: pos: %.2fm (%d steps), speed: %.1fms (%.0f ERPM), until: %.1fms (%.0f ERPM)",
+	commands_printf("%s: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), until %.1fms (%.0f ERPM)",
 					state_str(state),
 					(double)tac_steps_to_meters(cur_tac), cur_tac,
 					(double)erpm_to_ms(erpm), (double)erpm,
@@ -974,7 +974,7 @@ inline static void slow_state(const int cur_tac, const float cur_erpm,
 
 	prev_print = loop_step;
 	prev_printed_tac = cur_tac;
-	commands_printf("%s: pos: %.2fm (%d steps), speed: %.1fms (%.0f ERPM), constant speed: %.1fms (%.0f ERPM)",
+	commands_printf("%s: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), constant speed %.1fms (%.0f ERPM)",
 					state_str(state),
 					(double)tac_steps_to_meters(cur_tac), cur_tac,
 					(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
@@ -1292,7 +1292,7 @@ inline static void slowing_or_speed_up_print(const int cur_tac, const float cur_
 		int distance_left = abs(cur_tac) - config.braking_length;
 		prev_print = loop_step;
 		commands_printf(
-			"%s, pos %.2fm (%d steps), speed: %.1fms (%.0f ERPM), until: %.1fms (%.0f ERPM), -- %.2fm to braking zone",
+			"%s, pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), until %.1fms (%.0f ERPM), -- %.2fm to braking zone",
 			state_str(state),
 			(double)tac_steps_to_meters(cur_tac), cur_tac,
 			(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
@@ -1504,7 +1504,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		// Do not speed up in the braking zone
 		if (abs_tac <= config.braking_length)
 		{
-			commands_printf("%s: speed %.1fms (%.0f ERPM) -- Braking zone",
+			commands_printf("%s: speed %.1fms (%.0f ERPM), -- Braking zone detected",
 							(double)erpm_to_ms(cur_erpm), (double)cur_erpm, state_str(state));
 			braking(cur_tac);
 			break;
@@ -1601,7 +1601,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		if (loop_step - prev_print > long_print_delay)
 		{
 			prev_print = loop_step;
-			commands_printf("MANUAL_SLOW: pos %.2fm (%d steps), speed: %.1fms (%.0f ERPM), pull: %.1fKg (%.1fA)",
+			commands_printf("MANUAL_SLOW: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), pull %.1fKg (%.1fA)",
 							(double)tac_steps_to_meters(cur_tac), cur_tac,
 							(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
 							(double)(cur_current / config.amps_per_kg), (double)cur_current);
@@ -1641,7 +1641,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		if (loop_step - prev_print > long_print_delay)
 		{
 			prev_print = loop_step;
-			commands_printf("MANUAL_SLOW_BACK: pos %.2fm (%d steps), speed: %.1fms (%.0f ERPM), pull: %.1fKg (%.1fA)",
+			commands_printf("MANUAL_SLOW_BACK: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), pull %.1fKg (%.1fA)",
 							(double)tac_steps_to_meters(cur_tac), cur_tac,
 							(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
 							(double)(cur_current / config.amps_per_kg), (double)cur_current);
@@ -1671,7 +1671,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		// Timeout passed and moved enough to takeoff?
 		if (loop_step > timeout_step && abs(prev_abs_tac - abs_tac) >= config.takeoff_trigger_length)
 		{
-			commands_printf("%s: pos %.2fm (%d steps), moved %.2fm (%d steps) -- Moving detected",
+			commands_printf("%s: pos %.2fm (%d steps), moved %.2fm (%d steps), -- Motion detected",
 							state_str(state),
 							(double)tac_steps_to_meters(cur_tac), cur_tac,
 							(double)tac_steps_to_meters(config.takeoff_trigger_length), config.takeoff_trigger_length);
@@ -2068,9 +2068,9 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 			}
 
 			// Use braking_length from received config
-			if (abs_tac > set_config.braking_length)
+			if (abs_tac > set_config.braking_length + set_config.braking_extension_length)
 			{
-				commands_printf("%s: -- Can't set configuration when position is out of braking zone", state_str(state));
+				commands_printf("%s: -- Can't set configuration -- Position is out of safe braking zone", state_str(state));
 				break;
 			}
 
