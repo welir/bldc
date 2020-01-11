@@ -203,7 +203,7 @@ static const skypuff_config min_config = {
 	.amps_per_sec = 0.5,
 	.rope_length = 5,
 	.braking_length = 5,
-	.passive_braking_length = 3, // To create trigger length after unwinding
+	.braking_extension_length = 3, // To create trigger length after unwinding
 	.slowing_length = 3,
 	.slow_erpm = 100,
 	.rewinding_trigger_length = 10,
@@ -231,7 +231,7 @@ static const skypuff_config max_config = {
 	.amps_per_sec = 5000,	  // Almost instant set possible
 	.rope_length = 5000 * 120, // 120 - maximum motor poles * 3
 	.braking_length = 100 * 120,
-	.passive_braking_length = 5000 * 120,
+	.braking_extension_length = 5000 * 120,
 	.slowing_length = 100 * 120,
 	.slow_erpm = 30000,
 	.rewinding_trigger_length = 50 * 120,
@@ -758,8 +758,8 @@ static bool is_config_out_of_limits(const skypuff_config *conf)
 									 min_config.rope_length, max_config.rope_length) ||
 		   is_distance_out_of_limits("braking_length", conf->braking_length,
 									 min_config.braking_length, max_config.braking_length) ||
-		   is_distance_out_of_limits("passive_braking_length", conf->passive_braking_length,
-									 min_config.passive_braking_length, max_config.passive_braking_length) ||
+		   is_distance_out_of_limits("braking_extension_length", conf->braking_extension_length,
+									 min_config.braking_extension_length, max_config.braking_extension_length) ||
 		   is_distance_out_of_limits("slowing_length", conf->slowing_length,
 									 min_config.slowing_length, max_config.slowing_length) ||
 		   is_distance_out_of_limits("rewinding_trigger_length", conf->rewinding_trigger_length,
@@ -854,9 +854,15 @@ inline static void brake_state(const int cur_tac, const skypuff_state new_state,
 	timeout_reset();
 }
 
-inline static void brake(const int cur_tac)
+inline static void braking(const int cur_tac)
 {
 	brake_state(cur_tac, BRAKING, config.brake_current, "");
+}
+
+// This state mostly to inform UI that it's time to enable Unwinding and Pull buttons
+inline static void braking_extension(const int cur_tac)
+{
+	brake_state(cur_tac, BRAKING_EXTENSION, config.brake_current, "");
 }
 
 inline static void manual_brake(const int cur_tac)
@@ -1000,7 +1006,7 @@ static void set_example_conf(skypuff_config *cfg)
 	// Some example ranges
 	cfg->rope_length = meters_to_tac_steps(50);
 	cfg->braking_length = meters_to_tac_steps(1);
-	cfg->passive_braking_length = meters_to_tac_steps(0.5);
+	cfg->braking_extension_length = meters_to_tac_steps(0.5);
 	cfg->rewinding_trigger_length = meters_to_tac_steps(0.2);
 	cfg->unwinding_trigger_length = meters_to_tac_steps(0.05);
 	cfg->slowing_length = meters_to_tac_steps(3);
@@ -1059,7 +1065,7 @@ void custom_app_data_handler(unsigned char *data, unsigned int len)
 	set_config.amps_per_sec = buffer_get_float32_auto(data, &ind);
 	set_config.rope_length = buffer_get_int32(data, &ind);
 	set_config.braking_length = buffer_get_int32(data, &ind);
-	set_config.passive_braking_length = buffer_get_int32(data, &ind);
+	set_config.braking_extension_length = buffer_get_int32(data, &ind);
 
 	set_config.slowing_length = buffer_get_int32(data, &ind);
 	set_config.slow_erpm = buffer_get_float32_auto(data, &ind);
@@ -1199,7 +1205,7 @@ static bool brake_or_slowing(const int cur_tac, const int abs_tac)
 	// We are in the braking range?
 	if (abs_tac <= config.braking_length)
 	{
-		brake(cur_tac);
+		braking(cur_tac);
 		return true;
 	}
 
@@ -1265,7 +1271,7 @@ inline static bool is_direction_changed_or_stopped(const float cur_erpm)
 inline static void brake_or_unwinding(const int cur_tac, const int abs_tac)
 {
 	if (abs_tac <= config.braking_length)
-		brake(cur_tac);
+		braking(cur_tac);
 	else
 		unwinding(cur_tac);
 }
@@ -1273,7 +1279,7 @@ inline static void brake_or_unwinding(const int cur_tac, const int abs_tac)
 inline static void brake_or_manual_brake(const int cur_tac, const int abs_tac)
 {
 	if (abs_tac <= config.braking_length)
-		brake(cur_tac);
+		braking(cur_tac);
 	else
 		manual_brake(cur_tac);
 }
@@ -1317,17 +1323,40 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		}
 		break;
 	case BRAKING:
-		// Is out from beaking and passive zone?
-		if (abs_tac > config.braking_length + config.passive_braking_length)
+		// Moved to unwinding zone?
+		if (abs_tac > config.braking_length)
 		{
-			unwinding(cur_tac);
+			braking_extension(cur_tac);
 			break;
 		}
 
 		// Timeout thread will remove braking every second by default
 		// Apply brake again if position changed
 		if (timeout_has_timeout() && abs_tac != prev_abs_tac)
-			brake(cur_tac);
+			braking(cur_tac);
+		else
+			prev_abs_tac = abs_tac;
+
+		print_position_periodically(cur_tac, long_print_delay, "");
+		break;
+	case BRAKING_EXTENSION:
+		// Moved to unwinding zone?
+		if (abs_tac > config.braking_length + config.braking_extension_length)
+		{
+			unwinding(cur_tac);
+			break;
+		}
+
+		// Moved to braking zone?
+		if (abs_tac <= config.braking_length)
+		{
+			braking(cur_tac);
+		}
+
+		// Timeout thread will remove braking every second by default
+		// Apply brake again if position changed
+		if (timeout_has_timeout() && abs_tac != prev_abs_tac)
+			braking_extension(cur_tac);
 		else
 			prev_abs_tac = abs_tac;
 
@@ -1401,7 +1430,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		// We are in the braking range?
 		if (abs_tac <= config.braking_length)
 		{
-			brake(cur_tac);
+			braking(cur_tac);
 			break;
 		}
 
@@ -1451,7 +1480,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 			(cur_erpm < 0 && cur_tac <= -config.braking_length))
 		{
 			commands_printf("SLOW: -- unwinded to opposite braking zone");
-			brake(cur_tac);
+			braking(cur_tac);
 			break;
 		}
 
@@ -1477,7 +1506,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		{
 			commands_printf("%s: speed %.1fms (%.0f ERPM) -- Braking zone",
 							(double)erpm_to_ms(cur_erpm), (double)cur_erpm, state_str(state));
-			brake(cur_tac);
+			braking(cur_tac);
 			break;
 		}
 
@@ -1565,7 +1594,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 			(cur_erpm < 0 && cur_tac <= -config.braking_length))
 		{
 			commands_printf("MANUAL_SLOW: -- winded to opposite braking zone");
-			brake(cur_tac);
+			braking(cur_tac);
 			break;
 		}
 
@@ -1713,7 +1742,7 @@ inline static void print_conf(const int cur_tac)
 	commands_printf("  force changing speed: %.2fKg/sec (%.1fA/sec)", (double)(config.amps_per_sec / config.amps_per_kg), (double)config.amps_per_sec);
 	commands_printf("  rope length: %.2fm (%d steps)", (double)tac_steps_to_meters(config.rope_length), config.rope_length);
 	commands_printf("  braking range: %.2fm (%d steps)", (double)tac_steps_to_meters(config.braking_length), config.braking_length);
-	commands_printf("  passive braking range: %.2fm (%d steps)", (double)tac_steps_to_meters(config.passive_braking_length), config.passive_braking_length);
+	commands_printf("  braking extension range: %.2fm (%d steps)", (double)tac_steps_to_meters(config.braking_extension_length), config.braking_extension_length);
 	commands_printf("  slowing range: %.2fm (%d steps)", (double)tac_steps_to_meters(config.slowing_length), config.slowing_length);
 	commands_printf("  rewinding trigger range: %.2fm (%d steps)", (double)tac_steps_to_meters(config.rewinding_trigger_length), config.rewinding_trigger_length);
 	commands_printf("  unwinding trigger range: %.2fm (%d steps)", (double)tac_steps_to_meters(config.unwinding_trigger_length), config.unwinding_trigger_length);
@@ -1754,7 +1783,7 @@ inline static void buffer_append_skypuff_settings(uint8_t *buffer, int32_t *ind)
 	buffer_append_float32_auto(buffer, config.amps_per_sec, ind);
 	buffer_append_int32(buffer, config.rope_length, ind);
 	buffer_append_int32(buffer, config.braking_length, ind);
-	buffer_append_int32(buffer, config.passive_braking_length, ind);
+	buffer_append_int32(buffer, config.braking_extension_length, ind);
 	buffer_append_int32(buffer, config.slowing_length, ind);
 	buffer_append_float32_auto(buffer, config.slow_erpm, ind);
 	buffer_append_int32(buffer, config.rewinding_trigger_length, ind);
@@ -2045,7 +2074,7 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 
 			// Forget about UNITIALIZED :)
 			if (state == UNINITIALIZED)
-				brake(cur_tac);
+				braking(cur_tac);
 
 			break;
 		default:
