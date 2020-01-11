@@ -1847,7 +1847,7 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 		case MANUAL_BRAKING:
 			mc_interface_get_tachometer_value(true);
 			prev_abs_tac = 0;
-			commands_printf("%s: -- Zero is set", state_str(state));
+			commands_printf("%s: -- Zero is set -- Right here, Right now", state_str(state));
 			break;
 
 		default:
@@ -1964,7 +1964,7 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 			pre_pull(cur_tac);
 			break;
 		default:
-			commands_printf("%s: Can't switch to PRE_PULL -- Only possible from BRAKING_EXTENSION, UNWINDING or REWINDING", state_str(state));
+			commands_printf("%s: -- Can't switch to PRE_PULL -- Only possible from BRAKING_EXTENSION, UNWINDING or REWINDING", state_str(state));
 			break;
 		}
 
@@ -1977,7 +1977,7 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 			break;
 
 		default:
-			commands_printf("%s: Can't switch to TAKEOFF_PULL -- Only possible from PRE_PULL", state_str(state));
+			commands_printf("%s: -- Can't switch to TAKEOFF_PULL -- Only possible from PRE_PULL", state_str(state));
 			break;
 		}
 
@@ -1993,7 +1993,7 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 			break;
 
 		default:
-			commands_printf("%s: Can't switch to PULL -- Only possible from BRAKING_EXTENSION, TAKEOFF_PULL, UNWINDING or REWINDING", state_str(state));
+			commands_printf("%s: -- Can't switch to PULL -- Only possible from BRAKING_EXTENSION, TAKEOFF_PULL, UNWINDING or REWINDING", state_str(state));
 		}
 
 		break;
@@ -2005,7 +2005,7 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 			break;
 
 		default:
-			commands_printf("%s: Can't switch to FAST_PULL -- Only possible from PULL", state_str(state));
+			commands_printf("%s: -- Can't switch to FAST_PULL -- Only possible from PULL", state_str(state));
 			break;
 		}
 
