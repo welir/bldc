@@ -60,7 +60,7 @@
 
 	Types:
 	  'pos': current position
-	  'pull': pulling or breaking force
+	  'pull': pulling or braking force
 	  'speed': current speed
 	  '--': warning text until end of line 
 
@@ -839,7 +839,7 @@ inline static void brake_state(const int cur_tac, const skypuff_state new_state,
 		float erpm = mc_interface_get_rpm();
 		prev_print = loop_step;
 		prev_printed_tac = cur_tac;
-		commands_printf("%s: pos %.2fm (%d steps), speed: %.1fms (%.0f ERPM), breaking %.1fKg (%.1fA)%s",
+		commands_printf("%s: pos %.2fm (%d steps), speed: %.1fms (%.0f ERPM), braking %.1fKg (%.1fA)%s",
 						state_str(new_state),
 						(double)tac_steps_to_meters(cur_tac), cur_tac,
 						(double)erpm_to_ms(erpm), (double)erpm,
@@ -1378,7 +1378,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		if (!(loop_step % 500))
 			timeout_reset();
 
-		// Go breaking or slowing?
+		// Go braking or slowing?
 		if (brake_or_slowing(cur_tac, abs_tac))
 			break;
 
@@ -1412,7 +1412,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		if (!(loop_step % 500))
 			timeout_reset();
 
-		// Go breaking or slowing?
+		// Go braking or slowing?
 		if (brake_or_slowing(cur_tac, abs_tac))
 			break;
 
@@ -1589,7 +1589,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 			break;
 		}
 
-		// Slowly rewinded more then opposite side of breaking zone?
+		// Slowly rewinded more then opposite side of braking zone?
 		if ((cur_erpm > 0 && cur_tac >= config.braking_length) ||
 			(cur_erpm < 0 && cur_tac <= -config.braking_length))
 		{
@@ -1653,7 +1653,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		if (!(loop_step % 500))
 			timeout_reset();
 
-		// Go breaking or slowing?
+		// Go braking or slowing?
 		if (brake_or_slowing(cur_tac, abs_tac))
 			break;
 
@@ -1686,7 +1686,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		if (!(loop_step % 500))
 			timeout_reset();
 
-		// Go breaking or slowing?
+		// Go braking or slowing?
 		if (brake_or_slowing(cur_tac, abs_tac))
 			break;
 
@@ -1709,7 +1709,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		if (!(loop_step % 500))
 			timeout_reset();
 
-		// Go breaking or slowing?
+		// Go braking or slowing?
 		if (brake_or_slowing(cur_tac, abs_tac))
 			break;
 
@@ -2078,7 +2078,7 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 
 			store_config_to_eeprom(&config);
 
-			commands_printf("%s: -- Configuration are set -- Happy puffs!", state_str(state));
+			commands_printf("%s: -- Settings are set -- Happy puffs!", state_str(state));
 
 			// Forget about UNITIALIZED :)
 			if (state == UNINITIALIZED)
@@ -2353,7 +2353,7 @@ static void terminal_set_state(int argc, const char **argv)
 	}
 	else
 	{
-		commands_printf("%s: -- 'set_state %s' not implemented",
+		commands_printf("%s: -- 'set %s' not implemented",
 						state_str(state), argv[1]);
 	}
 }
