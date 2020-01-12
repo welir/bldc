@@ -120,6 +120,7 @@ typedef enum
 	DO_NOTHING,
 	SET_ZERO,
 	SET_MANUAL_BRAKING,
+	SET_BRAKING_EXTENSION,
 	SET_UNWINDING,
 	SET_MANUAL_SLOW,
 	SET_MANUAL_SLOW_BACK,
@@ -1678,7 +1679,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		if (loop_step > timeout_step && abs(prev_abs_tac - abs_tac) >= config.takeoff_trigger_length)
 		{
 			float erpm = mc_interface_get_rpm();
-			commands_printf("%s: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), moved %.2fm (%d steps), -- Motion detected",
+			commands_printf("%s: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), -- Motion %.2fm (%d steps) detected",
 							state_str(state),
 							(double)tac_steps_to_meters(cur_tac), cur_tac,
 							(double)erpm_to_ms(erpm), (double)erpm,
@@ -1940,6 +1941,19 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 
 		default:
 			commands_printf("%s: -- Can't switch to UNWINDING -- Only possible from BRAKING_EXTENSION, MANUAL_BRAKING, PRE_PULL, TAKEOFF_PULL, PULL, FAST_PULL", state_str(state));
+			break;
+		}
+
+		break;
+	case SET_BRAKING_EXTENSION:
+		switch (state)
+		{
+		case UNWINDING:
+			braking_extension(cur_tac);
+			break;
+
+		default:
+			commands_printf("%s: -- Can't switch to BRAKING_EXTENSION -- Only possible from UNWINDING", state_str(state));
 			break;
 		}
 
@@ -2332,6 +2346,11 @@ static void terminal_set_state(int argc, const char **argv)
 	else if (!strcmp(up, "MANUAL_BRAKING"))
 	{
 		terminal_command = SET_MANUAL_BRAKING;
+		return;
+	}
+	else if (!strcmp(up, "BRAKING_EXTENSION"))
+	{
+		terminal_command = SET_BRAKING_EXTENSION;
 		return;
 	}
 	else if (!strcmp(up, "MANUAL_SLOW"))
