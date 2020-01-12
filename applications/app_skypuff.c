@@ -77,8 +77,6 @@ const int smooth_max_step_delay = 100;
 
 const char *limits_wrn = "-- CONFIGURATION IS OUT OF LIMITS --";
 
-const uint32_t received_settings_v1_length = 110;
-
 // Threads
 static THD_FUNCTION(my_thread, arg);
 static THD_WORKING_AREA(my_thread_wa, 2048);
@@ -1043,7 +1041,9 @@ static void set_example_conf(skypuff_config *cfg)
 // Deserialize and ask control loop thread to apply
 void custom_app_data_handler(unsigned char *data, unsigned int len)
 {
+	const uint32_t received_settings_v1_length = 110;
 	int32_t ind = 0;
+
 	if (len != received_settings_v1_length)
 	{
 		commands_printf("%s: -- Can't decode settings -- Received %u bytes, expecting %u.",
@@ -1820,20 +1820,23 @@ inline static void buffer_append_skypuff_settings(uint8_t *buffer, int32_t *ind)
 // Serialize and send COMM_CUSTOM_APP_DATA
 inline static void send_conf(const int cur_tac)
 {
+	float erpm = mc_interface_get_rpm();
+
 	const int max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
 	uint8_t buffer[max_buf_size];
 	int32_t ind = 0;
 
-	// Serialization magic: version, state, position, drive settings, skypuff settings
+	// Serialization magic: version, state, position, speed, drive settings, skypuff settings
 	buffer[ind++] = skypuff_config_version;
 	buffer[ind++] = state;
 	buffer_append_int32(buffer, cur_tac, &ind);
+	buffer_append_float32_auto(buffer, erpm, &ind);
 	buffer_append_drive_setttings(buffer, &ind);
 	buffer_append_skypuff_settings(buffer, &ind);
 
 	if (ind > max_buf_size)
 	{
-		commands_printf("%s: -- ALARMA!!! -- get_conf() max buffer size %d, serialized bufer %d bytes. Memory corrupted!",
+		commands_printf("%s: -- ALARMA!!! -- send_conf() max buffer size %d, serialized bufer %d bytes. Memory corrupted!",
 						state_str(state), max_buf_size, ind);
 	}
 
