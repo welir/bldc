@@ -886,9 +886,11 @@ inline static void pull_state(const int cur_tac, const float pull_current, const
 
 	prev_print = loop_step;
 	prev_printed_tac = cur_tac;
-	commands_printf("%s: pos %.2fm (%d steps), pull %.1fKg (%.1fA)%s",
+	float erpm = mc_interface_get_rpm();
+	commands_printf("%s: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), pull %.1fKg (%.1fA)%s",
 					state_str(state),
 					(double)tac_steps_to_meters(cur_tac), cur_tac,
+					(double)erpm_to_ms(erpm), (double)erpm,
 					(double)(current / config.amps_per_kg), (double)current,
 					additional_msg);
 
@@ -1243,9 +1245,11 @@ inline static void print_position_periodically(const int cur_tac, const int dela
 	{
 		prev_print = loop_step;
 		prev_printed_tac = cur_tac;
-		commands_printf("%s: pos %.2fm (%d steps)%s",
+		float erpm = mc_interface_get_rpm();
+		commands_printf("%s: pos %.2fm (%d steps), speed %.1fms (%0.f ERPM)%s",
 						state_str(state),
 						(double)tac_steps_to_meters(cur_tac), cur_tac,
+						(double)erpm_to_ms(erpm), (double)erpm,
 						additional_msg);
 	}
 }
@@ -1661,9 +1665,11 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		int timeout_step = state_start_time + config.pre_pull_timeout;
 		if (loop_step == timeout_step)
 		{
-			commands_printf("%s: pos %.2fm (%d steps), -- Pre pull %.1fs timeout passed, saving position",
+			float erpm = mc_interface_get_rpm();
+			commands_printf("%s: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), -- Pre pull %.1fs timeout passed, saving position",
 							state_str(state),
 							(double)tac_steps_to_meters(cur_tac), cur_tac,
+							(double)erpm_to_ms(erpm), (double)erpm,
 							(double)config.pre_pull_timeout / (double)1000.0);
 			prev_abs_tac = abs_tac;
 		}
@@ -1671,9 +1677,11 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		// Timeout passed and moved enough to takeoff?
 		if (loop_step > timeout_step && abs(prev_abs_tac - abs_tac) >= config.takeoff_trigger_length)
 		{
-			commands_printf("%s: pos %.2fm (%d steps), moved %.2fm (%d steps), -- Motion detected",
+			float erpm = mc_interface_get_rpm();
+			commands_printf("%s: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), moved %.2fm (%d steps), -- Motion detected",
 							state_str(state),
 							(double)tac_steps_to_meters(cur_tac), cur_tac,
+							(double)erpm_to_ms(erpm), (double)erpm,
 							(double)tac_steps_to_meters(config.takeoff_trigger_length), config.takeoff_trigger_length);
 			takeoff_pull(cur_tac);
 			break;
@@ -1693,9 +1701,11 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		// Enough time of weak takeoff pull?
 		if (loop_step >= state_start_time + config.takeoff_period)
 		{
-			commands_printf("%s: pos %.2fm (%d steps), -- Takeoff %.1fs timeout passed",
+			float erpm = mc_interface_get_rpm();
+			commands_printf("%s: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), -- Takeoff %.1fs timeout passed",
 							state_str(state),
 							(double)tac_steps_to_meters(cur_tac), cur_tac,
+							(double)erpm_to_ms(erpm), (double)erpm,
 							(double)config.takeoff_period / (double)1000.0);
 			pull(cur_tac);
 			break;
@@ -1807,7 +1817,7 @@ inline static void buffer_append_skypuff_settings(uint8_t *buffer, int32_t *ind)
 }
 
 // Serialize and send COMM_CUSTOM_APP_DATA
-inline static void get_conf(const int cur_tac)
+inline static void send_conf(const int cur_tac)
 {
 	const int max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
 	uint8_t buffer[max_buf_size];
@@ -2037,7 +2047,7 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 
 		break;
 	case GET_CONF:
-		get_conf(cur_tac);
+		send_conf(cur_tac);
 
 		break;
 	case SET_CONF:
@@ -2079,6 +2089,9 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 			store_config_to_eeprom(&config);
 
 			commands_printf("%s: -- Settings are set -- Happy puffs!", state_str(state));
+
+			// Announce new settings
+			send_conf(cur_tac);
 
 			// Forget about UNITIALIZED :)
 			if (state == UNINITIALIZED)
