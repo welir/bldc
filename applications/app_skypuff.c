@@ -1843,7 +1843,7 @@ inline static void send_conf(const int cur_tac)
 	commands_send_app_data(buffer, ind);
 }
 
-inline static void process_terminal_commands(const int cur_tac, const int abs_tac)
+inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 {
 	// In case of new command during next switch
 	skypuff_terminal_command prev_command = terminal_command;
@@ -1860,10 +1860,19 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 		case BRAKING:
 		case BRAKING_EXTENSION:
 		case MANUAL_BRAKING:
+		{
+			float erpm = mc_interface_get_rpm();
 			mc_interface_get_tachometer_value(true);
 			prev_abs_tac = 0;
-			commands_printf("%s: -- Zero is set -- Right here, Right now", state_str(state));
-			break;
+			prev_printed_tac = 0;
+			*cur_tac = 0;
+			*abs_tac = 0;
+			commands_printf("%s: pos %.2fm (%d steps), speed %.1fms (%0.f ERPM), -- Zero is set",
+							state_str(state),
+							(double)tac_steps_to_meters(*cur_tac), *cur_tac,
+							(double)erpm_to_ms(erpm), (double)erpm);
+		}
+		break;
 
 		default:
 			commands_printf("%s: -- Can't set zero -- Only possible from UNITIALIZED or BRAKING states",
@@ -1878,7 +1887,7 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 			commands_printf("%s: -- Can't switch to MANUAL_BRAKING -- Not possible from UNITIALIZED", state_str(state));
 			break;
 		default:
-			manual_brake(cur_tac);
+			manual_brake(*cur_tac);
 			break;
 		}
 
@@ -1887,14 +1896,14 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 		switch (state)
 		{
 		case MANUAL_BRAKING:
-			if (abs_tac <= config.braking_length)
+			if (*abs_tac <= config.braking_length)
 			{
 				commands_printf("%s: -- Can't switch to MANUAL_SLOW -- Please unwind from braking zone %.1fm (%d steps)",
 								state_str(state), (double)tac_steps_to_meters(config.braking_length),
 								config.braking_length);
 				break;
 			}
-			manual_slow_speed_up(cur_tac);
+			manual_slow_speed_up(*cur_tac);
 			break;
 		default:
 			commands_printf("%s: -- Can't switch to MANUAL_SLOW -- Only possible from MANUAL_BRAKING", state_str(state));
@@ -1906,14 +1915,14 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 		switch (state)
 		{
 		case MANUAL_BRAKING:
-			if (abs_tac <= config.braking_length)
+			if (*abs_tac <= config.braking_length)
 			{
 				commands_printf("%s: -- Can't switch to MANUAL_SLOW_BACK -- Please unwind from braking zone %.1fm (%d steps)",
 								state_str(state), (double)tac_steps_to_meters(config.braking_length),
 								config.braking_length);
 				break;
 			}
-			manual_slow_back_speed_up(cur_tac);
+			manual_slow_back_speed_up(*cur_tac);
 			break;
 		default:
 			commands_printf("%s: -- Can't switch to MANUAL_SLOW_BACK -- Only possible from MANUAL_BRAKING", state_str(state));
@@ -1939,7 +1948,7 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 		case TAKEOFF_PULL:
 		case PULL:
 		case FAST_PULL:
-			unwinding(cur_tac);
+			unwinding(*cur_tac);
 			break;
 
 		default:
@@ -1951,12 +1960,13 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 	case SET_BRAKING_EXTENSION:
 		switch (state)
 		{
+		case MANUAL_BRAKING:
 		case UNWINDING:
-			braking_extension(cur_tac);
+			braking_extension(*cur_tac);
 			break;
 
 		default:
-			commands_printf("%s: -- Can't switch to BRAKING_EXTENSION -- Only possible from UNWINDING", state_str(state));
+			commands_printf("%s: -- Can't switch to BRAKING_EXTENSION -- Only possible from UNWINDING or MANUAL_BRAKING", state_str(state));
 			break;
 		}
 
@@ -1987,16 +1997,16 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 		switch (state)
 		{
 		case PRE_PULL:
-			pre_pull(cur_tac);
+			pre_pull(*cur_tac);
 			break;
 		case TAKEOFF_PULL:
-			takeoff_pull(cur_tac);
+			takeoff_pull(*cur_tac);
 			break;
 		case PULL:
-			pull(cur_tac);
+			pull(*cur_tac);
 			break;
 		case FAST_PULL:
-			fast_pull(cur_tac);
+			fast_pull(*cur_tac);
 			break;
 
 		default:
@@ -2010,7 +2020,7 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 		case BRAKING_EXTENSION:
 		case UNWINDING:
 		case REWINDING:
-			pre_pull(cur_tac);
+			pre_pull(*cur_tac);
 			break;
 		default:
 			commands_printf("%s: -- Can't switch to PRE_PULL -- Only possible from BRAKING_EXTENSION, UNWINDING or REWINDING", state_str(state));
@@ -2022,7 +2032,7 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 		switch (state)
 		{
 		case PRE_PULL:
-			takeoff_pull(cur_tac);
+			takeoff_pull(*cur_tac);
 			break;
 
 		default:
@@ -2038,7 +2048,7 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 		case TAKEOFF_PULL:
 		case UNWINDING:
 		case REWINDING:
-			pull(cur_tac);
+			pull(*cur_tac);
 			break;
 
 		default:
@@ -2050,7 +2060,7 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 		switch (state)
 		{
 		case PULL:
-			fast_pull(cur_tac);
+			fast_pull(*cur_tac);
 			break;
 
 		default:
@@ -2060,11 +2070,11 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 
 		break;
 	case PRINT_CONF:
-		print_conf(cur_tac);
+		print_conf(*cur_tac);
 
 		break;
 	case GET_CONF:
-		send_conf(cur_tac);
+		send_conf(*cur_tac);
 
 		break;
 	case SET_CONF:
@@ -2095,7 +2105,7 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 			}
 
 			// Use braking_length from received config
-			if (abs_tac > set_config.braking_length + set_config.braking_extension_length)
+			if (*abs_tac > set_config.braking_length + set_config.braking_extension_length)
 			{
 				commands_printf("%s: -- Can't set configuration -- Position is out of safe braking zone", state_str(state));
 				break;
@@ -2108,11 +2118,11 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 			commands_printf("%s: -- Settings are set -- Happy puffs!", state_str(state));
 
 			// Announce new settings
-			send_conf(cur_tac);
+			send_conf(*cur_tac);
 
 			// Forget about UNITIALIZED :)
 			if (state == UNINITIALIZED)
-				braking(cur_tac);
+				braking(*cur_tac);
 
 			break;
 		default:
@@ -2131,10 +2141,10 @@ inline static void process_terminal_commands(const int cur_tac, const int abs_ta
 			smooth_motor_release();
 			break;
 		case MOTOR_BRAKING:
-			smooth_motor_brake(cur_tac, abs_tac, terminal_motor_state.param.current);
+			smooth_motor_brake(*cur_tac, *abs_tac, terminal_motor_state.param.current);
 			break;
 		case MOTOR_CURRENT:
-			smooth_motor_current(cur_tac, abs_tac, terminal_motor_state.param.current);
+			smooth_motor_current(*cur_tac, *abs_tac, terminal_motor_state.param.current);
 			break;
 		case MOTOR_SPEED:
 			smooth_motor_speed(terminal_motor_state.param.erpm);
@@ -2190,7 +2200,7 @@ static THD_FUNCTION(my_thread, arg)
 			state != UNINITIALIZED && state != MANUAL_BRAKING)
 			manual_brake(cur_tac);
 
-		process_terminal_commands(cur_tac, abs_tac);
+		process_terminal_commands(&cur_tac, &abs_tac);
 		process_states(cur_tac, abs_tac);
 
 		// Time to adjust motor?
