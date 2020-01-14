@@ -1962,11 +1962,12 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 		{
 		case MANUAL_BRAKING:
 		case UNWINDING:
+		case REWINDING:
 			braking_extension(*cur_tac);
 			break;
 
 		default:
-			commands_printf("%s: -- Can't switch to BRAKING_EXTENSION -- Only possible from UNWINDING or MANUAL_BRAKING", state_str(state));
+			commands_printf("%s: -- Can't switch to BRAKING_EXTENSION -- Only possible from UNWINDING, REWINDING or MANUAL_BRAKING", state_str(state));
 			break;
 		}
 
