@@ -561,32 +561,8 @@ inline static void smooth_motor_adjustment(const int cur_tac, const int abs_tac)
 			prev_smooth_motor_adjustment = loop_step;
 			next_smooth_motor_adjustment = loop_step + next_delay;
 			break;
-		case MOTOR_BRAKING:
-			// Smoothly decrease braking until unwinding current and start current
-			step_current = smooth_calc_step(current_motor_state.param.current,
-											config.unwinding_current,
-											prev_adjustment_delay,
-											&next_delay);
-
-			// signed_unwinding_current could be reached on this adjustment?
-			if (!next_delay)
-			{
-				current_motor_state.mode = MOTOR_CURRENT;
-				current_motor_state.param.current = 0;
-
-				smooth_motor_adjustment(cur_tac, abs_tac);
-				return;
-			}
-
-			mc_interface_set_brake_current(step_current);
-			current_motor_state.param.current = step_current;
-
-			prev_smooth_motor_adjustment = loop_step;
-			next_smooth_motor_adjustment = loop_step + next_delay;
-
-			break;
 		default:
-			// Process MOTOR_RELEASED and MOTOR_SPEED here
+			// Process MOTOR_BRAKING, MOTOR_RELEASED and MOTOR_SPEED here
 			// Just smoothly increase current
 			current_motor_state.mode = MOTOR_CURRENT;
 			current_motor_state.param.current = 0;
