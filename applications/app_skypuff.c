@@ -97,6 +97,7 @@ static void terminal_smooth(int argc, const char **argv);
 static volatile bool stop_now = true;
 static volatile bool is_running = false;
 static const volatile mc_configuration *mc_conf;
+static int half_timeout;	   // System app timeout divided by 2
 static int loop_step;		   // Main control loop counter
 static int prev_abs_tac;	   // Detect movements
 static float prev_erpm;		   // Detect change in direction of rotation
@@ -127,40 +128,17 @@ typedef enum
 	SET_TAKEOFF_PULL,
 	SET_PULL,
 	SET_FAST_PULL,
+	PRINT_CONF,
+	SET_CONF,
+	SEND_CONF,
 #ifdef DEBUG_SMOOTH_MOTOR
 	SET_SMOOTH,
 #endif
-	GET_CONF,
-	PRINT_CONF,
-	SET_CONF,
 } skypuff_terminal_command;
 
 static volatile skypuff_terminal_command terminal_command;
 
-/*
-	Smooth Motor Control
-
-	Respect pilot and do not pull or release him too sharply.
-	Unwinding current is minimal step of applying pull or brake.
-
-	Use config.amps_per_sec as force changing speed and
-	smooth_max_step_delay as maximum step delay.
-
-	In case of different current and target modes, 
-	switch instantly if force is less then unwinding 
-	and smoothly decrease/increase until unwinding if above.
-
-	Always brake instantly if braking zone.
-*/
-
-typedef enum
-{
-	MOTOR_RELEASED,
-	MOTOR_CURRENT,
-	MOTOR_BRAKING,
-	MOTOR_SPEED,
-} smooth_motor_mode;
-
+// This struct is not for serialization
 typedef struct
 {
 	smooth_motor_mode mode;
@@ -1014,63 +992,218 @@ static void set_example_conf(skypuff_config *cfg)
 	cfg->takeoff_period = 5 * 1000;
 }
 
-// Deserialize and ask control loop thread to apply
-void custom_app_data_handler(unsigned char *data, unsigned int len)
+// Serialization/deserialization functions
+inline static void serializa_drive(uint8_t *buffer, int32_t *ind)
 {
-	const uint32_t received_settings_v1_length = 110;
+	buffer[(*ind)++] = (uint8_t)mc_conf->si_motor_poles;
+	buffer_append_float32_auto(buffer, mc_conf->si_gear_ratio, ind);
+	buffer_append_float32_auto(buffer, mc_conf->si_wheel_diameter, ind);
+}
+
+inline static bool deserialize_drive(unsigned char *data, unsigned int len, skypuff_drive *to, int32_t *ind)
+{
+	const int32_t serialized_drive_v1_length = 1 + 4 * 2;
+
+	int available_bytes = len - *ind;
+	if (available_bytes < serialized_drive_v1_length)
+	{
+		commands_printf("%s: -- Can't deserialize drive settings -- Received %d bytes, expecting %d.",
+						state_str(state), available_bytes, serialized_drive_v1_length);
+		return false;
+	}
+
+	to->motor_poles = data[*ind++];
+	to->gear_ratio = buffer_get_float32_auto(data, ind);
+	to->wheel_diameter = buffer_get_float32_auto(data, ind);
+	return true;
+}
+
+inline static void serialize_config(uint8_t *buffer, int32_t *ind)
+{
+	buffer_append_float32_auto(buffer, config.amps_per_kg, ind);
+	buffer_append_float32_auto(buffer, config.amps_per_sec, ind);
+	buffer_append_int32(buffer, config.rope_length, ind);
+	buffer_append_int32(buffer, config.braking_length, ind);
+	buffer_append_int32(buffer, config.braking_extension_length, ind);
+	buffer_append_int32(buffer, config.slowing_length, ind);
+	buffer_append_float32_auto(buffer, config.slow_erpm, ind);
+	buffer_append_int32(buffer, config.rewinding_trigger_length, ind);
+	buffer_append_int32(buffer, config.unwinding_trigger_length, ind);
+	buffer_append_float32_auto(buffer, config.pull_current, ind);
+	buffer_append_float32_auto(buffer, config.pre_pull_k, ind);
+	buffer_append_float32_auto(buffer, config.takeoff_pull_k, ind);
+	buffer_append_float32_auto(buffer, config.fast_pull_k, ind);
+	buffer_append_int32(buffer, config.takeoff_trigger_length, ind);
+	buffer_append_int32(buffer, config.pre_pull_timeout, ind);
+	buffer_append_int32(buffer, config.takeoff_period, ind);
+	buffer_append_float32_auto(buffer, config.brake_current, ind);
+	buffer_append_float32_auto(buffer, config.slowing_current, ind);
+	buffer_append_float32_auto(buffer, config.manual_brake_current, ind);
+	buffer_append_float32_auto(buffer, config.unwinding_current, ind);
+	buffer_append_float32_auto(buffer, config.rewinding_current, ind);
+	buffer_append_float32_auto(buffer, config.slow_max_current, ind);
+	buffer_append_float32_auto(buffer, config.manual_slow_max_current, ind);
+	buffer_append_float32_auto(buffer, config.manual_slow_speed_up_current, ind);
+	buffer_append_float32_auto(buffer, config.manual_slow_erpm, ind);
+}
+
+inline static bool deserialize_config(unsigned char *data, unsigned int len, skypuff_config *to, int32_t *ind)
+{
+	const int32_t serialized_settings_v1_length = 4 * 25;
+
+	int available_bytes = len - *ind;
+	if (available_bytes < serialized_settings_v1_length)
+	{
+		commands_printf("%s: -- Can't deserialize config settings -- Received %d bytes, expecting %d.",
+						state_str(state), available_bytes, serialized_settings_v1_length);
+		return false;
+	}
+
+	to->amps_per_kg = buffer_get_float32_auto(data, ind);
+	to->amps_per_sec = buffer_get_float32_auto(data, ind);
+	to->rope_length = buffer_get_int32(data, ind);
+	to->braking_length = buffer_get_int32(data, ind);
+	to->braking_extension_length = buffer_get_int32(data, ind);
+
+	to->slowing_length = buffer_get_int32(data, ind);
+	to->slow_erpm = buffer_get_float32_auto(data, ind);
+	to->rewinding_trigger_length = buffer_get_int32(data, ind);
+	to->unwinding_trigger_length = buffer_get_int32(data, ind);
+	to->pull_current = buffer_get_float32_auto(data, ind);
+
+	to->pre_pull_k = buffer_get_float32_auto(data, ind);
+	to->takeoff_pull_k = buffer_get_float32_auto(data, ind);
+	to->fast_pull_k = buffer_get_float32_auto(data, ind);
+	to->takeoff_trigger_length = buffer_get_int32(data, ind);
+	to->pre_pull_timeout = buffer_get_int32(data, ind);
+
+	to->takeoff_period = buffer_get_int32(data, ind);
+	to->brake_current = buffer_get_float32_auto(data, ind);
+	to->slowing_current = buffer_get_float32_auto(data, ind);
+	to->manual_brake_current = buffer_get_float32_auto(data, ind);
+	to->unwinding_current = buffer_get_float32_auto(data, ind);
+
+	to->rewinding_current = buffer_get_float32_auto(data, ind);
+	to->slow_max_current = buffer_get_float32_auto(data, ind);
+	to->manual_slow_max_current = buffer_get_float32_auto(data, ind);
+	to->manual_slow_speed_up_current = buffer_get_float32_auto(data, ind);
+	to->manual_slow_erpm = buffer_get_float32_auto(data, ind);
+
+	return true;
+}
+
+inline static void serialize_alive(uint8_t *buffer, int32_t *ind, const int cur_tac)
+{
+	float erpm = mc_interface_get_rpm();
+	float amps = mc_interface_get_tot_current_directional();
+
+	buffer_append_int32(buffer, cur_tac, ind);
+	buffer_append_float32_auto(buffer, erpm, ind);
+	buffer_append_float32_auto(buffer, amps, ind);
+}
+
+inline static bool deserialize_alive(unsigned char *data, unsigned int len, int32_t *ind)
+{
+	const int32_t serialized_alive_length = 4;
+
+	int available_bytes = len - *ind;
+	if (available_bytes < serialized_alive_length)
+	{
+		commands_printf("%s: -- Can't deserialize alive command -- Received %d bytes, expecting %d.",
+						state_str(state), available_bytes, serialized_alive_length);
+		return false;
+	}
+
+	alive_inc = buffer_get_int32(data, ind);
+	return true;
+}
+
+// No sense to split initial state into many commands
+inline static void send_conf(const int cur_tac)
+{
+	const int max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
+	uint8_t buffer[max_buf_size];
 	int32_t ind = 0;
 
-	if (len != received_settings_v1_length)
+	buffer[ind++] = SK_COMM_SETTINGS_V1;
+	buffer[ind++] = state;
+	serialize_alive(buffer, &ind, cur_tac);
+	serializa_drive(buffer, &ind);
+	serialize_config(buffer, &ind);
+
+	if (ind > max_buf_size)
 	{
-		commands_printf("%s: -- Can't decode settings -- Received %u bytes, expecting %u.",
-						state_str(state), len, received_settings_v1_length);
+		commands_printf("%s: -- ALARMA!!! -- send_conf() max buffer size %d, serialized bufer %d bytes. Memory corrupted!",
+						state_str(state), max_buf_size, ind);
+	}
+
+	commands_send_app_data(buffer, ind);
+}
+
+// Send motor mode, speed and current amps as reply to alive command
+inline static void send_alive(const int cur_tac)
+{
+	const int max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
+	uint8_t buffer[max_buf_size];
+	int32_t ind = 0;
+
+	// Serialization magic: version, state, position, speed, drive settings, skypuff settings
+	buffer[ind++] = SK_COMM_ALIVE;
+	serialize_alive(buffer, &ind, cur_tac);
+
+	if (ind > max_buf_size)
+	{
+		commands_printf("%s: -- ALARMA!!! -- send_alive() max buffer size %d, serialized bufer %d bytes. Memory corrupted!",
+						state_str(state), max_buf_size, ind);
+	}
+
+	commands_send_app_data(buffer, ind);
+}
+
+void custom_app_data_handler(unsigned char *data, unsigned int len)
+{
+	if (len < 1)
+	{
+		commands_printf("%s: -- Can't deserialize command -- No data.",
+						state_str(state));
 		return;
 	}
 
-	if (data[ind] != skypuff_config_version)
+	skypuff_custom_app_data_command command;
+
+	int32_t ind = 0;
+	command = data[ind++];
+
+	switch (command)
 	{
-		commands_printf("%s: -- Can't decode settings -- Received version %u, expecting %u.",
-						state_str(state), (unsigned int)data[ind], (unsigned int)skypuff_config_version);
+	case SK_COMM_ALIVE:
+		// Set alive_inc right there
+		if (!deserialize_alive(data, len, &ind))
+			return;
+
+		break;
+	case SK_COMM_SETTINGS_V1:
+		if (!deserialize_drive(data, len, &set_drive, &ind))
+			return;
+		if (!deserialize_config(data, len, &set_config, &ind))
+			return;
+
+		terminal_command = SET_CONF;
+
+		break;
+	default:
+		commands_printf("%s: -- Can't deserialize command -- Unknown command '%d'.",
+						state_str(state), (int)command);
 		return;
 	}
 
-	ind++; // Skip version byte
-
-	set_drive.motor_poles = data[ind++];
-	set_drive.gear_ratio = buffer_get_float32_auto(data, &ind);
-	set_drive.wheel_diameter = buffer_get_float32_auto(data, &ind);
-
-	set_config.amps_per_kg = buffer_get_float32_auto(data, &ind);
-	set_config.amps_per_sec = buffer_get_float32_auto(data, &ind);
-	set_config.rope_length = buffer_get_int32(data, &ind);
-	set_config.braking_length = buffer_get_int32(data, &ind);
-	set_config.braking_extension_length = buffer_get_int32(data, &ind);
-
-	set_config.slowing_length = buffer_get_int32(data, &ind);
-	set_config.slow_erpm = buffer_get_float32_auto(data, &ind);
-	set_config.rewinding_trigger_length = buffer_get_int32(data, &ind);
-	set_config.unwinding_trigger_length = buffer_get_int32(data, &ind);
-	set_config.pull_current = buffer_get_float32_auto(data, &ind);
-
-	set_config.pre_pull_k = buffer_get_float32_auto(data, &ind);
-	set_config.takeoff_pull_k = buffer_get_float32_auto(data, &ind);
-	set_config.fast_pull_k = buffer_get_float32_auto(data, &ind);
-	set_config.takeoff_trigger_length = buffer_get_int32(data, &ind);
-	set_config.pre_pull_timeout = buffer_get_int32(data, &ind);
-
-	set_config.takeoff_period = buffer_get_int32(data, &ind);
-	set_config.brake_current = buffer_get_float32_auto(data, &ind);
-	set_config.slowing_current = buffer_get_float32_auto(data, &ind);
-	set_config.manual_brake_current = buffer_get_float32_auto(data, &ind);
-	set_config.unwinding_current = buffer_get_float32_auto(data, &ind);
-
-	set_config.rewinding_current = buffer_get_float32_auto(data, &ind);
-	set_config.slow_max_current = buffer_get_float32_auto(data, &ind);
-	set_config.manual_slow_max_current = buffer_get_float32_auto(data, &ind);
-	set_config.manual_slow_speed_up_current = buffer_get_float32_auto(data, &ind);
-	set_config.manual_slow_erpm = buffer_get_float32_auto(data, &ind);
-
-	terminal_command = SET_CONF;
+	// Extra bytes?
+	if (ind != (int32_t)len)
+	{
+		commands_printf("%s: -- Extra bytes received -- Extra %d bytes on %s command deserialization.",
+						state_str(state), (len - ind), sk_command_str(command));
+		return;
+	}
 }
 
 // Called when the custom application is started. Start our
@@ -1085,6 +1218,7 @@ void app_custom_start(void)
 	mc_conf = mc_interface_get_configuration();
 
 	// Static variables initial state
+	half_timeout = app_get_configuration()->timeout_msec / 2;
 	prev_print = INT_MIN / 2;
 	prev_printed_tac = INT_MIN / 2;
 	alive_until = 0;
@@ -1356,7 +1490,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		break;
 	case UNWINDING:
 		// No system timeouts on this state
-		if (!(loop_step % 500))
+		if (!(loop_step % half_timeout))
 			timeout_reset();
 
 		// Go braking or slowing?
@@ -1390,7 +1524,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		break;
 	case REWINDING:
 		// No system timeouts on this state
-		if (!(loop_step % 500))
+		if (!(loop_step % half_timeout))
 			timeout_reset();
 
 		// Go braking or slowing?
@@ -1429,7 +1563,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		break;
 	case SLOW:
 		// No system timeouts on this state
-		if (!(loop_step % 500))
+		if (!(loop_step % half_timeout))
 			timeout_reset();
 
 		cur_current = mc_interface_get_tot_current_directional_filtered();
@@ -1476,7 +1610,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		break;
 	case MANUAL_SLOW_SPEED_UP:
 		// No system timeouts on this state
-		if (!(loop_step % 500))
+		if (!(loop_step % half_timeout))
 			timeout_reset();
 
 		cur_erpm = mc_interface_get_rpm();
@@ -1510,7 +1644,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		break;
 	case MANUAL_SLOW_BACK_SPEED_UP:
 		// No system timeouts on this state
-		if (!(loop_step % 500))
+		if (!(loop_step % half_timeout))
 			timeout_reset();
 
 		cur_erpm = mc_interface_get_rpm();
@@ -1534,7 +1668,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		break;
 	case MANUAL_SLOW:
 		// No system timeouts on this state
-		if (!(loop_step % 500))
+		if (!(loop_step % half_timeout))
 			timeout_reset();
 
 		cur_current = mc_interface_get_tot_current_directional_filtered();
@@ -1591,7 +1725,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		break;
 	case MANUAL_SLOW_BACK:
 		// No system timeouts on this state
-		if (!(loop_step % 500))
+		if (!(loop_step % half_timeout))
 			timeout_reset();
 
 		cur_current = mc_interface_get_tot_current_directional_filtered();
@@ -1631,7 +1765,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		break;
 	case PRE_PULL:
 		// No system timeouts on this state
-		if (!(loop_step % 500))
+		if (!(loop_step % half_timeout))
 			timeout_reset();
 
 		// Go braking or slowing?
@@ -1668,7 +1802,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		break;
 	case TAKEOFF_PULL:
 		// No system timeouts on this state
-		if (!(loop_step % 500))
+		if (!(loop_step % half_timeout))
 			timeout_reset();
 
 		// Go braking or slowing?
@@ -1693,7 +1827,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 	case PULL:
 	case FAST_PULL:
 		// No system timeouts on this state
-		if (!(loop_step % 500))
+		if (!(loop_step % half_timeout))
 			timeout_reset();
 
 		// Go braking or slowing?
@@ -1705,7 +1839,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 #ifdef DEBUG_SMOOTH_MOTOR
 	case MANUAL_DEBUG_SMOOTH:
 		// No system timeouts on this state
-		if (!(loop_step % 500))
+		if (!(loop_step % half_timeout))
 			timeout_reset();
 
 		print_position_periodically(cur_tac, long_print_delay, "");
@@ -1724,7 +1858,7 @@ inline static void print_conf(const int cur_tac)
 	commands_printf("  motor poles: %dp", mc_conf->si_motor_poles);
 	commands_printf("  gear ratio: %.5f", (double)mc_conf->si_gear_ratio);
 
-	commands_printf("SkyPUFF configuration v%d:", skypuff_config_version);
+	commands_printf("SkyPUFF configuration version %s:", sk_command_str(SK_COMM_SETTINGS_V1));
 	commands_printf("  amperes per 1kg force: %.1fAKg", (double)config.amps_per_kg);
 	commands_printf("  force changing speed: %.2fKg/sec (%.1fA/sec)", (double)(config.amps_per_sec / config.amps_per_kg), (double)config.amps_per_sec);
 	commands_printf("  rope length: %.2fm (%d steps)", (double)tac_steps_to_meters(config.rope_length), config.rope_length);
@@ -1755,68 +1889,6 @@ inline static void print_conf(const int cur_tac)
 	commands_printf("SkyPUFF state:");
 	commands_printf("  state %s, current position: %.2fm (%d steps)", state_str(state), (double)tac_steps_to_meters(cur_tac), cur_tac);
 	commands_printf("  loop counter: %d, alive until: %d, %s", loop_step, alive_until, loop_step >= alive_until ? "communication timeout" : "no timeout");
-}
-
-inline static void buffer_append_drive_setttings(uint8_t *buffer, int32_t *ind)
-{
-	buffer[(*ind)++] = (uint8_t)mc_conf->si_motor_poles;
-	buffer_append_float32_auto(buffer, mc_conf->si_gear_ratio, ind);
-	buffer_append_float32_auto(buffer, mc_conf->si_wheel_diameter, ind);
-}
-
-inline static void buffer_append_skypuff_settings(uint8_t *buffer, int32_t *ind)
-{
-	buffer_append_float32_auto(buffer, config.amps_per_kg, ind);
-	buffer_append_float32_auto(buffer, config.amps_per_sec, ind);
-	buffer_append_int32(buffer, config.rope_length, ind);
-	buffer_append_int32(buffer, config.braking_length, ind);
-	buffer_append_int32(buffer, config.braking_extension_length, ind);
-	buffer_append_int32(buffer, config.slowing_length, ind);
-	buffer_append_float32_auto(buffer, config.slow_erpm, ind);
-	buffer_append_int32(buffer, config.rewinding_trigger_length, ind);
-	buffer_append_int32(buffer, config.unwinding_trigger_length, ind);
-	buffer_append_float32_auto(buffer, config.pull_current, ind);
-	buffer_append_float32_auto(buffer, config.pre_pull_k, ind);
-	buffer_append_float32_auto(buffer, config.takeoff_pull_k, ind);
-	buffer_append_float32_auto(buffer, config.fast_pull_k, ind);
-	buffer_append_int32(buffer, config.takeoff_trigger_length, ind);
-	buffer_append_int32(buffer, config.pre_pull_timeout, ind);
-	buffer_append_int32(buffer, config.takeoff_period, ind);
-	buffer_append_float32_auto(buffer, config.brake_current, ind);
-	buffer_append_float32_auto(buffer, config.slowing_current, ind);
-	buffer_append_float32_auto(buffer, config.manual_brake_current, ind);
-	buffer_append_float32_auto(buffer, config.unwinding_current, ind);
-	buffer_append_float32_auto(buffer, config.rewinding_current, ind);
-	buffer_append_float32_auto(buffer, config.slow_max_current, ind);
-	buffer_append_float32_auto(buffer, config.manual_slow_max_current, ind);
-	buffer_append_float32_auto(buffer, config.manual_slow_speed_up_current, ind);
-	buffer_append_float32_auto(buffer, config.manual_slow_erpm, ind);
-}
-
-// Serialize and send COMM_CUSTOM_APP_DATA
-inline static void send_conf(const int cur_tac)
-{
-	float erpm = mc_interface_get_rpm();
-
-	const int max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
-	uint8_t buffer[max_buf_size];
-	int32_t ind = 0;
-
-	// Serialization magic: version, state, position, speed, drive settings, skypuff settings
-	buffer[ind++] = skypuff_config_version;
-	buffer[ind++] = state;
-	buffer_append_int32(buffer, cur_tac, &ind);
-	buffer_append_float32_auto(buffer, erpm, &ind);
-	buffer_append_drive_setttings(buffer, &ind);
-	buffer_append_skypuff_settings(buffer, &ind);
-
-	if (ind > max_buf_size)
-	{
-		commands_printf("%s: -- ALARMA!!! -- send_conf() max buffer size %d, serialized bufer %d bytes. Memory corrupted!",
-						state_str(state), max_buf_size, ind);
-	}
-
-	commands_send_app_data(buffer, ind);
 }
 
 inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
@@ -2050,7 +2122,7 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 		print_conf(*cur_tac);
 
 		break;
-	case GET_CONF:
+	case SEND_CONF:
 		send_conf(*cur_tac);
 
 		break;
@@ -2169,6 +2241,7 @@ static THD_FUNCTION(my_thread, arg)
 		{
 			alive_until = loop_step + alive_inc;
 			alive_inc = 0;
+			send_alive(cur_tac);
 		}
 
 		// Communication timeout?
@@ -2243,7 +2316,7 @@ static void terminal_get_conf(int argc, const char **argv)
 	(void)argc;
 	(void)argv;
 
-	terminal_command = GET_CONF;
+	terminal_command = SEND_CONF;
 }
 
 static void terminal_set_example_conf(int argc, const char **argv)
