@@ -231,23 +231,6 @@ static const skypuff_config max_config = {
 	.manual_slow_erpm = 40000,
 };
 
-inline static const char *motor_mode_str(smooth_motor_mode m)
-{
-	switch (m)
-	{
-	case MOTOR_RELEASED:
-		return "MOTOR_RELEASED";
-	case MOTOR_BRAKING:
-		return "MOTOR_BRAKING";
-	case MOTOR_CURRENT:
-		return "MOTOR_CURRENT";
-	case MOTOR_SPEED:
-		return "MOTOR_SPEED";
-	default:
-		return "MOTOR_UNKNOWN";
-	}
-}
-
 // Convert units functions
 inline static float meters_per_rev(void)
 {
@@ -1097,6 +1080,7 @@ inline static void serialize_alive(uint8_t *buffer, int32_t *ind, const int cur_
 	float erpm = mc_interface_get_rpm();
 	float amps = mc_interface_get_tot_current_directional();
 
+	buffer[*ind++] = current_motor_state.mode;
 	buffer_append_int32(buffer, cur_tac, ind);
 	buffer_append_float32_auto(buffer, erpm, ind);
 	buffer_append_float32_auto(buffer, amps, ind);
