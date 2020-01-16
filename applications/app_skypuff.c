@@ -1122,9 +1122,9 @@ inline static void send_conf(const int cur_tac)
 	buffer[ind++] = SK_COMM_SETTINGS_V1;
 	buffer[ind++] = state;
 	buffer_append_float32_auto(buffer, GET_INPUT_VOLTAGE(), &ind);
-	serialize_alive(buffer, &ind, cur_tac);
 	serialize_drive(buffer, &ind);
 	serialize_config(buffer, &ind);
+	serialize_alive(buffer, &ind, cur_tac);
 
 	if (ind > max_buf_size)
 	{
