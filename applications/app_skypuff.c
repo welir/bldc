@@ -1075,15 +1075,25 @@ inline static bool deserialize_config(unsigned char *data, unsigned int len, sky
 	return true;
 }
 
+inline static void get_stats(float *erpm, float *motor_amps, float *power)
+{
+	*erpm = mc_interface_get_rpm();
+	*motor_amps = mc_interface_read_reset_avg_motor_current();
+	*power = (float)GET_INPUT_VOLTAGE() * mc_interface_read_reset_avg_input_current();
+}
+
 inline static void serialize_alive(uint8_t *buffer, int32_t *ind, const int cur_tac)
 {
-	float erpm = mc_interface_get_rpm();
-	float amps = mc_interface_get_tot_current_directional();
+	float erpm;
+	float motor_amps;
+	float power;
+	get_stats(&erpm, &motor_amps, &power);
 
 	buffer[(*ind)++] = current_motor_state.mode;
 	buffer_append_int32(buffer, cur_tac, ind);
 	buffer_append_float32_auto(buffer, erpm, ind);
-	buffer_append_float32_auto(buffer, amps, ind);
+	buffer_append_float32_auto(buffer, motor_amps, ind);
+	buffer_append_float32_auto(buffer, power, ind);
 }
 
 inline static bool deserialize_alive(unsigned char *data, unsigned int len, int32_t *ind)
@@ -1837,6 +1847,11 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 
 inline static void print_conf(const int cur_tac)
 {
+	float erpm;
+	float motor_amps;
+	float power;
+	get_stats(&erpm, &motor_amps, &power);
+
 	commands_printf("VESC additional info:");
 	commands_printf("  wheel diameter: %.2fmm", (double)(mc_conf->si_wheel_diameter * 1000));
 	commands_printf("  motor poles: %dp", mc_conf->si_motor_poles);
@@ -1871,7 +1886,8 @@ inline static void print_conf(const int cur_tac)
 	commands_printf("  fast pull coefficient: %.0f%% (%.2fkg, %.5f)", (double)config.fast_pull_k * (double)100.0, (double)(config.pull_current / config.amps_per_kg * config.fast_pull_k), (double)config.fast_pull_k);
 
 	commands_printf("SkyPUFF state:");
-	commands_printf("  state %s, current position: %.2fm (%d steps)", state_str(state), (double)tac_steps_to_meters(cur_tac), cur_tac);
+	commands_printf("  %s: pos %.2fm (%d steps), speed %.1fm/s (%.1f ERPM)", state_str(state), (double)tac_steps_to_meters(cur_tac), cur_tac, (double)erpm_to_ms(erpm), (double)erpm);
+	commands_printf("  motor state %s: %.2fkg (%.1fA), power: %.1fW", motor_mode_str(current_motor_state.mode), (double)(motor_amps / config.amps_per_kg), (double)motor_amps, (double)power);
 	commands_printf("  timeout reset interval: %dms", timeout_reset_interval);
 	commands_printf("  loop counter: %d, alive until: %d, %s", loop_step, alive_until, loop_step >= alive_until ? "communication timeout" : "no timeout");
 }

@@ -174,4 +174,21 @@ inline const char *sk_command_str(const skypuff_custom_app_data_command c)
     }
 }
 
+inline static const char *motor_mode_str(smooth_motor_mode m)
+{
+    switch (m)
+    {
+    case MOTOR_RELEASED:
+        return "MOTOR_RELEASED";
+    case MOTOR_BRAKING:
+        return "MOTOR_BRAKING";
+    case MOTOR_CURRENT:
+        return "MOTOR_CURRENT";
+    case MOTOR_SPEED:
+        return "MOTOR_SPEED";
+    default:
+        return "MOTOR_UNKNOWN";
+    }
+}
+
 #endif
