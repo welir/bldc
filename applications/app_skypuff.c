@@ -976,7 +976,7 @@ static void set_example_conf(skypuff_config *cfg)
 }
 
 // Serialization/deserialization functions
-inline static void serializa_drive(uint8_t *buffer, int32_t *ind)
+inline static void serialize_drive(uint8_t *buffer, int32_t *ind)
 {
 	buffer[(*ind)++] = (uint8_t)mc_conf->si_motor_poles;
 	buffer_append_float32_auto(buffer, mc_conf->si_gear_ratio, ind);
@@ -995,7 +995,7 @@ inline static bool deserialize_drive(unsigned char *data, unsigned int len, skyp
 		return false;
 	}
 
-	to->motor_poles = data[*ind++];
+	to->motor_poles = data[(*ind)++];
 	to->gear_ratio = buffer_get_float32_auto(data, ind);
 	to->wheel_diameter = buffer_get_float32_auto(data, ind);
 	return true;
@@ -1080,7 +1080,7 @@ inline static void serialize_alive(uint8_t *buffer, int32_t *ind, const int cur_
 	float erpm = mc_interface_get_rpm();
 	float amps = mc_interface_get_tot_current_directional();
 
-	buffer[*ind++] = current_motor_state.mode;
+	buffer[(*ind)++] = current_motor_state.mode;
 	buffer_append_int32(buffer, cur_tac, ind);
 	buffer_append_float32_auto(buffer, erpm, ind);
 	buffer_append_float32_auto(buffer, amps, ind);
@@ -1112,7 +1112,7 @@ inline static void send_conf(const int cur_tac)
 	buffer[ind++] = SK_COMM_SETTINGS_V1;
 	buffer[ind++] = state;
 	serialize_alive(buffer, &ind, cur_tac);
-	serializa_drive(buffer, &ind);
+	serialize_drive(buffer, &ind);
 	serialize_config(buffer, &ind);
 
 	if (ind > max_buf_size)
