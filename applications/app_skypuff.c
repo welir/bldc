@@ -97,16 +97,16 @@ static void terminal_smooth(int argc, const char **argv);
 static volatile bool stop_now = true;
 static volatile bool is_running = false;
 static const volatile mc_configuration *mc_conf;
-static int half_timeout;	   // System app timeout divided by 2
-static int loop_step;		   // Main control loop counter
-static int prev_abs_tac;	   // Detect movements
-static float prev_erpm;		   // Detect change in direction of rotation
-static int prev_print;		   // Loop counter value of the last state print
-static int prev_printed_tac;   // Do not print the same position
-static int alive_until;		   // In good communication we trust until (i < alive_until)
-static int state_start_time;   // Count the duration of state
-static float terminal_pull_kg; // Pulling force to set
-static volatile int alive_inc; // Communication timeout increment from terminal thread
+static int timeout_reset_interval; // System app timeout divided by 2
+static int loop_step;			   // Main control loop counter
+static int prev_abs_tac;		   // Detect movements
+static float prev_erpm;			   // Detect change in direction of rotation
+static int prev_print;			   // Loop counter value of the last state print
+static int prev_printed_tac;	   // Do not print the same position
+static int alive_until;			   // In good communication we trust until (i < alive_until)
+static int state_start_time;	   // Count the duration of state
+static float terminal_pull_kg;	 // Pulling force to set
+static volatile int alive_inc;	 // Communication timeout increment from terminal thread
 
 static volatile skypuff_state state; // Readable from commands threads too
 static skypuff_config config;
@@ -1218,7 +1218,7 @@ void app_custom_start(void)
 	mc_conf = mc_interface_get_configuration();
 
 	// Static variables initial state
-	half_timeout = app_get_configuration()->timeout_msec / 2;
+	timeout_reset_interval = app_get_configuration()->timeout_msec / 2;
 	prev_print = INT_MIN / 2;
 	prev_printed_tac = INT_MIN / 2;
 	alive_until = 0;
@@ -1490,7 +1490,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		break;
 	case UNWINDING:
 		// No system timeouts on this state
-		if (!(loop_step % half_timeout))
+		if (!(loop_step % timeout_reset_interval))
 			timeout_reset();
 
 		// Go braking or slowing?
@@ -1524,7 +1524,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		break;
 	case REWINDING:
 		// No system timeouts on this state
-		if (!(loop_step % half_timeout))
+		if (!(loop_step % timeout_reset_interval))
 			timeout_reset();
 
 		// Go braking or slowing?
@@ -1563,7 +1563,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		break;
 	case SLOW:
 		// No system timeouts on this state
-		if (!(loop_step % half_timeout))
+		if (!(loop_step % timeout_reset_interval))
 			timeout_reset();
 
 		cur_current = mc_interface_get_tot_current_directional_filtered();
@@ -1610,7 +1610,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		break;
 	case MANUAL_SLOW_SPEED_UP:
 		// No system timeouts on this state
-		if (!(loop_step % half_timeout))
+		if (!(loop_step % timeout_reset_interval))
 			timeout_reset();
 
 		cur_erpm = mc_interface_get_rpm();
@@ -1644,7 +1644,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		break;
 	case MANUAL_SLOW_BACK_SPEED_UP:
 		// No system timeouts on this state
-		if (!(loop_step % half_timeout))
+		if (!(loop_step % timeout_reset_interval))
 			timeout_reset();
 
 		cur_erpm = mc_interface_get_rpm();
@@ -1668,7 +1668,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		break;
 	case MANUAL_SLOW:
 		// No system timeouts on this state
-		if (!(loop_step % half_timeout))
+		if (!(loop_step % timeout_reset_interval))
 			timeout_reset();
 
 		cur_current = mc_interface_get_tot_current_directional_filtered();
@@ -1725,7 +1725,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		break;
 	case MANUAL_SLOW_BACK:
 		// No system timeouts on this state
-		if (!(loop_step % half_timeout))
+		if (!(loop_step % timeout_reset_interval))
 			timeout_reset();
 
 		cur_current = mc_interface_get_tot_current_directional_filtered();
@@ -1765,7 +1765,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		break;
 	case PRE_PULL:
 		// No system timeouts on this state
-		if (!(loop_step % half_timeout))
+		if (!(loop_step % timeout_reset_interval))
 			timeout_reset();
 
 		// Go braking or slowing?
@@ -1802,7 +1802,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		break;
 	case TAKEOFF_PULL:
 		// No system timeouts on this state
-		if (!(loop_step % half_timeout))
+		if (!(loop_step % timeout_reset_interval))
 			timeout_reset();
 
 		// Go braking or slowing?
@@ -1827,7 +1827,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 	case PULL:
 	case FAST_PULL:
 		// No system timeouts on this state
-		if (!(loop_step % half_timeout))
+		if (!(loop_step % timeout_reset_interval))
 			timeout_reset();
 
 		// Go braking or slowing?
@@ -1839,7 +1839,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 #ifdef DEBUG_SMOOTH_MOTOR
 	case MANUAL_DEBUG_SMOOTH:
 		// No system timeouts on this state
-		if (!(loop_step % half_timeout))
+		if (!(loop_step % timeout_reset_interval))
 			timeout_reset();
 
 		print_position_periodically(cur_tac, long_print_delay, "");
@@ -1888,6 +1888,7 @@ inline static void print_conf(const int cur_tac)
 
 	commands_printf("SkyPUFF state:");
 	commands_printf("  state %s, current position: %.2fm (%d steps)", state_str(state), (double)tac_steps_to_meters(cur_tac), cur_tac);
+	commands_printf("  timeout reset interval: %dms", timeout_reset_interval);
 	commands_printf("  loop counter: %d, alive until: %d, %s", loop_step, alive_until, loop_step >= alive_until ? "communication timeout" : "no timeout");
 }
 
