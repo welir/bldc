@@ -98,17 +98,21 @@ static void terminal_smooth(int argc, const char **argv);
 static volatile bool stop_now = true;
 static volatile bool is_running = false;
 static const volatile mc_configuration *mc_conf;
-static int timeout_reset_interval; // System app timeout divided by 2
-static int loop_step;			   // Main control loop counter
-static int prev_abs_tac;		   // Detect movements
-static float prev_erpm;			   // Detect change in direction of rotation
-static int prev_print;			   // Loop counter value of the last state print
-static int prev_temps_print;	   // Loop counter value of the last temps print
-static int prev_printed_tac;	   // Do not print the same position
-static int alive_until;			   // In good communication we trust until (i < alive_until)
-static int state_start_time;	   // Count the duration of state
-static float terminal_pull_kg;	 // Pulling force to set
-static volatile int alive_inc;	 // Communication timeout increment from terminal thread
+static int timeout_reset_interval;	// System app timeout divided by 2
+static int loop_step;				  // Main control loop counter
+static int prev_abs_tac;			  // Detect movements
+static float prev_erpm;				  // Detect change in direction of rotation
+static int prev_print;				  // Loop counter value of the last state print
+static int prev_temps_print;		  // Loop counter value of the last temps print
+static int prev_printed_tac;		  // Do not print the same position
+static float prev_printed_fets_temp;  // Do not print close temps
+static float prev_printed_motor_temp; // Do not print close temps
+static float prev_printed_wh_out;	 // Do not print small changes
+static float prev_printed_wh_in;	  // Do not printsmall changes
+static int alive_until;				  // In good communication we trust until (i < alive_until)
+static int state_start_time;		  // Count the duration of state
+static float terminal_pull_kg;		  // Pulling force to set
+static volatile int alive_inc;		  // Communication timeout increment from terminal thread
 
 static volatile skypuff_state state; // Readable from commands threads too
 static skypuff_config config;
@@ -1227,6 +1231,10 @@ void app_custom_start(void)
 	prev_erpm = 0;
 	prev_print = INT_MIN / 2;
 	prev_temps_print = INT_MIN / 2;
+	prev_printed_fets_temp = -1000;
+	prev_printed_motor_temp = -1000;
+	prev_printed_wh_out = 0;
+	prev_printed_wh_in = 0;
 	prev_printed_tac = INT_MIN / 2;
 	terminal_command = DO_NOTHING;
 	stop_now = false;
@@ -1349,13 +1357,32 @@ inline static void print_temps_periodically(void)
 {
 	if (loop_step - prev_temps_print > temps_print_delay)
 	{
+		float fets_temp = mc_interface_temp_fet_filtered();
+		float motor_temp = mc_interface_temp_motor_filtered();
+		float wh_in = mc_interface_get_watt_hours(false);
+		float wh_out = mc_interface_get_watt_hours_charged(false);
+
+		// Small changes?
+		if (fabs(fets_temp - prev_printed_fets_temp) < (double)1 &&
+			(motor_temp < -40 || fabs(motor_temp - prev_printed_motor_temp) < (double)1) &&
+			fabs(wh_in - prev_printed_wh_in) < (double)0.001 &&
+			fabs(wh_out - prev_printed_wh_out) < (double)0.001)
+		{
+			prev_temps_print = loop_step;
+			return;
+		}
+
+		prev_printed_fets_temp = fets_temp;
+		prev_printed_motor_temp = motor_temp;
+		prev_printed_wh_in = wh_in;
+		prev_printed_wh_out = wh_out;
 		prev_temps_print = loop_step;
-		commands_printf("%s: tfets %.1fC, tmotor %.1f, wh_in %.5f, wh_out %.5f",
+		commands_printf("%s: tfets %.1fC, tmotor %.1f, wh_in %.3f, wh_out %.3f",
 						state_str(state),
-						(double)mc_interface_temp_fet_filtered(),
-						(double)mc_interface_temp_motor_filtered(),
-						(double)mc_interface_get_watt_hours(false),
-						(double)mc_interface_get_watt_hours_charged(false));
+						(double)prev_printed_fets_temp,
+						(double)prev_printed_motor_temp,
+						(double)prev_printed_wh_in,
+						(double)prev_printed_wh_out);
 	}
 }
 
