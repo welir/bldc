@@ -1377,7 +1377,7 @@ inline static void print_temps_periodically(void)
 		prev_printed_wh_in = wh_in;
 		prev_printed_wh_out = wh_out;
 		prev_temps_print = loop_step;
-		commands_printf("%s: tfets %.1fC, tmotor %.1f, wh_in %.3f, wh_out %.3f",
+		commands_printf("%s: t_fets %.1fC, t_motor %.1fC, wh_in %.3fWh, wh_out %.3fWh",
 						state_str(state),
 						(double)prev_printed_fets_temp,
 						(double)prev_printed_motor_temp,
