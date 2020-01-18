@@ -73,6 +73,7 @@
 
 const int short_print_delay = 500; // 0.5s, measured in control loop counts
 const int long_print_delay = 3000;
+const int temps_print_delay = 5000;
 const int smooth_max_step_delay = 100;
 
 const char *limits_wrn = "-- CONFIGURATION IS OUT OF LIMITS --";
@@ -102,6 +103,7 @@ static int loop_step;			   // Main control loop counter
 static int prev_abs_tac;		   // Detect movements
 static float prev_erpm;			   // Detect change in direction of rotation
 static int prev_print;			   // Loop counter value of the last state print
+static int prev_temps_print;	   // Loop counter value of the last temps print
 static int prev_printed_tac;	   // Do not print the same position
 static int alive_until;			   // In good communication we trust until (i < alive_until)
 static int state_start_time;	   // Count the duration of state
@@ -1122,6 +1124,10 @@ inline static void send_conf(const int cur_tac)
 	buffer[ind++] = SK_COMM_SETTINGS_V1;
 	buffer[ind++] = state;
 	buffer_append_float32_auto(buffer, GET_INPUT_VOLTAGE(), &ind);
+	buffer_append_float16(buffer, mc_interface_temp_fet_filtered(), 1e1, &ind);
+	buffer_append_float16(buffer, mc_interface_temp_motor_filtered(), 1e1, &ind);
+	buffer_append_float32(buffer, mc_interface_get_watt_hours(false), 1e4, &ind);
+	buffer_append_float32(buffer, mc_interface_get_watt_hours_charged(false), 1e4, &ind);
 	serialize_drive(buffer, &ind);
 	serialize_config(buffer, &ind);
 	serialize_alive(buffer, &ind, cur_tac);
@@ -1220,6 +1226,7 @@ void app_custom_start(void)
 	prev_abs_tac = 0;
 	prev_erpm = 0;
 	prev_print = INT_MIN / 2;
+	prev_temps_print = INT_MIN / 2;
 	prev_printed_tac = INT_MIN / 2;
 	terminal_command = DO_NOTHING;
 	stop_now = false;
@@ -1336,6 +1343,20 @@ static bool brake_or_slowing(const int cur_tac, const int abs_tac)
 	}
 
 	return false;
+}
+
+inline static void print_temps_periodically(void)
+{
+	if (loop_step - prev_temps_print > temps_print_delay)
+	{
+		prev_temps_print = loop_step;
+		commands_printf("%s: tfets %.1fC, tmotor %.1f, wh_in %.5f, wh_out %.5f",
+						state_str(state),
+						(double)mc_interface_temp_fet_filtered(),
+						(double)mc_interface_temp_motor_filtered(),
+						(double)mc_interface_get_watt_hours(false),
+						(double)mc_interface_get_watt_hours_charged(false));
+	}
 }
 
 inline static void print_position_periodically(const int cur_tac, const int delay, const char *additional_msg)
@@ -2258,6 +2279,8 @@ static THD_FUNCTION(my_thread, arg)
 		// Time to adjust motor?
 		if (loop_step >= next_smooth_motor_adjustment)
 			smooth_motor_adjustment(cur_tac, abs_tac);
+
+		print_temps_periodically();
 
 		chThdSleepMilliseconds(1);
 	}
