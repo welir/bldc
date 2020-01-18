@@ -73,7 +73,7 @@
 
 const int short_print_delay = 500; // 0.5s, measured in control loop counts
 const int long_print_delay = 3000;
-const int temps_print_delay = 5000;
+const int temps_print_delay = 15000;
 const int smooth_max_step_delay = 100;
 
 const char *limits_wrn = "-- CONFIGURATION IS OUT OF LIMITS --";
