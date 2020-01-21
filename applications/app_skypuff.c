@@ -1127,6 +1127,7 @@ inline static void send_conf(const int cur_tac)
 
 	buffer[ind++] = SK_COMM_SETTINGS_V1;
 	buffer[ind++] = state;
+	buffer_append_float16(buffer, mc_conf->l_current_max, 1e1, &ind);
 	buffer_append_float32_auto(buffer, GET_INPUT_VOLTAGE(), &ind);
 	buffer_append_float16(buffer, mc_interface_temp_fet_filtered(), 1e1, &ind);
 	buffer_append_float16(buffer, mc_interface_temp_motor_filtered(), 1e1, &ind);
