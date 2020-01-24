@@ -107,8 +107,10 @@ static int prev_temps_print;		  // Loop counter value of the last temps print
 static int prev_printed_tac;		  // Do not print the same position
 static float prev_printed_fets_temp;  // Do not print close temps
 static float prev_printed_motor_temp; // Do not print close temps
+static float prev_printed_bat_temp;   // Do not print close temps
+static float prev_printed_bat_v;	  // Do not print small changes
 static float prev_printed_wh_out;	 // Do not print small changes
-static float prev_printed_wh_in;	  // Do not printsmall changes
+static float prev_printed_wh_in;	  // Do not print small changes
 static int alive_until;				  // In good communication we trust until (i < alive_until)
 static int state_start_time;		  // Count the duration of state
 static float terminal_pull_kg;		  // Pulling force to set
@@ -1097,9 +1099,9 @@ inline static void serialize_alive(uint8_t *buffer, int32_t *ind, const int cur_
 
 	buffer[(*ind)++] = current_motor_state.mode;
 	buffer_append_int32(buffer, cur_tac, ind);
-	buffer_append_float32_auto(buffer, erpm, ind);
-	buffer_append_float32_auto(buffer, motor_amps, ind);
-	buffer_append_float32_auto(buffer, power, ind);
+	buffer_append_float32(buffer, erpm, 1e1, ind);
+	buffer_append_float32(buffer, motor_amps, 1e1, ind);
+	buffer_append_float32(buffer, power, 1e1, ind);
 }
 
 inline static bool deserialize_alive(unsigned char *data, unsigned int len, int32_t *ind)
@@ -1127,8 +1129,14 @@ inline static void send_conf(const int cur_tac)
 
 	buffer[ind++] = SK_COMM_SETTINGS_V1;
 	buffer[ind++] = state;
-	buffer_append_float16(buffer, mc_conf->l_current_max, 1e1, &ind);
-	buffer_append_float32_auto(buffer, GET_INPUT_VOLTAGE(), &ind);
+	// Let UI set scales limits
+	buffer_append_float16(buffer, mc_conf->lo_current_max, 1e1, &ind);
+	buffer_append_float16(buffer, mc_conf->l_temp_fet_start, 1e1, &ind);
+	buffer_append_float16(buffer, mc_conf->l_temp_motor_start, 1e1, &ind);
+	buffer_append_float16(buffer, fmax(mc_conf->l_min_vin, mc_conf->l_battery_cut_start), 1e1, &ind);
+	buffer_append_float16(buffer, mc_conf->l_max_vin, 1e1, &ind);
+	// And instantly print stats
+	buffer_append_float16(buffer, GET_INPUT_VOLTAGE(), 1e1, &ind);
 	buffer_append_float16(buffer, mc_interface_temp_fet_filtered(), 1e1, &ind);
 	buffer_append_float16(buffer, mc_interface_temp_motor_filtered(), 1e1, &ind);
 	buffer_append_float32(buffer, mc_interface_get_watt_hours(false), 1e4, &ind);
@@ -1234,8 +1242,10 @@ void app_custom_start(void)
 	prev_temps_print = INT_MIN / 2;
 	prev_printed_fets_temp = -1000;
 	prev_printed_motor_temp = -1000;
+	prev_printed_bat_temp = -1000;
 	prev_printed_wh_out = 0;
 	prev_printed_wh_in = 0;
+	prev_printed_bat_v = 0;
 	prev_printed_tac = INT_MIN / 2;
 	terminal_command = DO_NOTHING;
 	stop_now = false;
@@ -1356,18 +1366,25 @@ static bool brake_or_slowing(const int cur_tac, const int abs_tac)
 
 inline static void print_temps_periodically(void)
 {
-	if (loop_step - prev_temps_print > temps_print_delay)
+	mc_fault_code f = mc_interface_get_fault();
+
+	if (f != FAULT_CODE_NONE || loop_step - prev_temps_print > temps_print_delay)
 	{
 		float fets_temp = mc_interface_temp_fet_filtered();
 		float motor_temp = mc_interface_temp_motor_filtered();
+		float bat_temp = 0; // Not implemented yet
 		float wh_in = mc_interface_get_watt_hours(false);
 		float wh_out = mc_interface_get_watt_hours_charged(false);
+		float bat_v = (float)GET_INPUT_VOLTAGE();
 
 		// Small changes?
-		if (fabs(fets_temp - prev_printed_fets_temp) < (double)1 &&
+		if (f == FAULT_CODE_NONE &&
+			fabs(fets_temp - prev_printed_fets_temp) < (double)1 &&
 			(motor_temp < -40 || fabs(motor_temp - prev_printed_motor_temp) < (double)1) &&
+			fabs(bat_temp - prev_printed_bat_temp) < (double)1 &&
 			fabs(wh_in - prev_printed_wh_in) < (double)0.001 &&
-			fabs(wh_out - prev_printed_wh_out) < (double)0.001)
+			fabs(wh_out - prev_printed_wh_out) < (double)0.001 &&
+			fabs(bat_v - prev_printed_bat_v) < (double)0.1)
 		{
 			prev_temps_print = loop_step;
 			return;
@@ -1375,15 +1392,21 @@ inline static void print_temps_periodically(void)
 
 		prev_printed_fets_temp = fets_temp;
 		prev_printed_motor_temp = motor_temp;
+		prev_printed_bat_temp = bat_temp;
 		prev_printed_wh_in = wh_in;
 		prev_printed_wh_out = wh_out;
+		prev_printed_bat_v = bat_v;
 		prev_temps_print = loop_step;
-		commands_printf("%s: t_fets %.1fC, t_motor %.1fC, wh_in %.3fWh, wh_out %.3fWh",
+
+		commands_printf("%s: t_fets %.1fC, t_motor %.1fC, t_bat %.1fC, wh_in %.3fWh, wh_out %.3fWh, bat_v %.1fV, fault_code %s",
 						state_str(state),
 						(double)prev_printed_fets_temp,
 						(double)prev_printed_motor_temp,
+						(double)prev_printed_bat_temp,
 						(double)prev_printed_wh_in,
-						(double)prev_printed_wh_out);
+						(double)prev_printed_wh_out,
+						(double)prev_printed_bat_v,
+						mc_interface_fault_to_string(f));
 	}
 }
 
