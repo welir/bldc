@@ -98,23 +98,24 @@ static void terminal_smooth(int argc, const char **argv);
 static volatile bool stop_now = true;
 static volatile bool is_running = false;
 static const volatile mc_configuration *mc_conf;
-static int timeout_reset_interval;	// System app timeout divided by 2
-static int loop_step;				  // Main control loop counter
-static int prev_abs_tac;			  // Detect movements
-static float prev_erpm;				  // Detect change in direction of rotation
-static int prev_print;				  // Loop counter value of the last state print
-static int prev_temps_print;		  // Loop counter value of the last temps print
-static int prev_printed_tac;		  // Do not print the same position
-static float prev_printed_fets_temp;  // Do not print close temps
-static float prev_printed_motor_temp; // Do not print close temps
-static float prev_printed_bat_temp;   // Do not print close temps
-static float prev_printed_bat_v;	  // Do not print small changes
-static float prev_printed_wh_out;	 // Do not print small changes
-static float prev_printed_wh_in;	  // Do not print small changes
-static int alive_until;				  // In good communication we trust until (i < alive_until)
-static int state_start_time;		  // Count the duration of state
-static float terminal_pull_kg;		  // Pulling force to set
-static volatile int alive_inc;		  // Communication timeout increment from terminal thread
+static int timeout_reset_interval;		 // System app timeout divided by 2
+static int loop_step;					 // Main control loop counter
+static int prev_abs_tac;				 // Detect movements
+static float prev_erpm;					 // Detect change in direction of rotation
+static int prev_print;					 // Loop counter value of the last state print
+static int prev_temps_print;			 // Loop counter value of the last temps print
+static int prev_printed_tac;			 // Do not print the same position
+static float prev_printed_fets_temp;	 // Do not print close temps
+static float prev_printed_motor_temp;	// Do not print close temps
+static float prev_printed_bat_temp;		 // Do not print close temps
+static float prev_printed_bat_v;		 // Do not print small changes
+static float prev_printed_wh_out;		 // Do not print small changes
+static float prev_printed_wh_in;		 // Do not print small changes
+static mc_fault_code prev_printed_fault; // Do not print the same fault many times
+static int alive_until;					 // In good communication we trust until (i < alive_until)
+static int state_start_time;			 // Count the duration of state
+static float terminal_pull_kg;			 // Pulling force to set
+static volatile int alive_inc;			 // Communication timeout increment from terminal thread
 
 static volatile skypuff_state state; // Readable from commands threads too
 static skypuff_config config;
@@ -1247,6 +1248,7 @@ void app_custom_start(void)
 	prev_printed_wh_in = 0;
 	prev_printed_bat_v = 0;
 	prev_printed_tac = INT_MIN / 2;
+	prev_printed_fault = FAULT_CODE_NONE;
 	terminal_command = DO_NOTHING;
 	stop_now = false;
 
@@ -1364,11 +1366,11 @@ static bool brake_or_slowing(const int cur_tac, const int abs_tac)
 	return false;
 }
 
-inline static void print_temps_periodically(void)
+inline static void print_stats_periodically(void)
 {
 	mc_fault_code f = mc_interface_get_fault();
 
-	if (f != FAULT_CODE_NONE || loop_step - prev_temps_print > temps_print_delay)
+	if (f != prev_printed_fault || loop_step - prev_temps_print > temps_print_delay)
 	{
 		float fets_temp = mc_interface_temp_fet_filtered();
 		float motor_temp = mc_interface_temp_motor_filtered();
@@ -1378,7 +1380,7 @@ inline static void print_temps_periodically(void)
 		float bat_v = (float)GET_INPUT_VOLTAGE();
 
 		// Small changes?
-		if (f == FAULT_CODE_NONE &&
+		if (f == prev_printed_fault &&
 			fabs(fets_temp - prev_printed_fets_temp) < (double)1 &&
 			(motor_temp < -40 || fabs(motor_temp - prev_printed_motor_temp) < (double)1) &&
 			fabs(bat_temp - prev_printed_bat_temp) < (double)1 &&
@@ -1397,8 +1399,9 @@ inline static void print_temps_periodically(void)
 		prev_printed_wh_out = wh_out;
 		prev_printed_bat_v = bat_v;
 		prev_temps_print = loop_step;
+		prev_printed_fault = f;
 
-		commands_printf("%s: t_fets %.1fC, t_motor %.1fC, t_bat %.1fC, wh_in %.3fWh, wh_out %.3fWh, bat_v %.1fV, fault_code %s",
+		commands_printf("%s: t_fets %.1fC, t_motor %.1fC, t_bat %.1fC, wh_in %.3fWh, wh_out %.3fWh, bat_v %.1fV, fault %s",
 						state_str(state),
 						(double)prev_printed_fets_temp,
 						(double)prev_printed_motor_temp,
@@ -2331,7 +2334,7 @@ static THD_FUNCTION(my_thread, arg)
 		if (loop_step >= next_smooth_motor_adjustment)
 			smooth_motor_adjustment(cur_tac, abs_tac);
 
-		print_temps_periodically();
+		print_stats_periodically();
 
 		chThdSleepMilliseconds(1);
 	}
