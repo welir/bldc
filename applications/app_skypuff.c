@@ -1370,6 +1370,7 @@ inline static void print_stats_periodically(void)
 {
 	mc_fault_code f = mc_interface_get_fault();
 
+	// Will print new fault immediately
 	if (f != prev_printed_fault || loop_step - prev_temps_print > temps_print_delay)
 	{
 		float fets_temp = mc_interface_temp_fet_filtered();
@@ -1401,15 +1402,15 @@ inline static void print_stats_periodically(void)
 		prev_temps_print = loop_step;
 		prev_printed_fault = f;
 
-		commands_printf("%s: t_fets %.1fC, t_motor %.1fC, t_bat %.1fC, wh_in %.3fWh, wh_out %.3fWh, bat_v %.1fV, fault %s",
+		commands_printf("%s: fault %s, t_fets %.1fC, t_motor %.1fC, t_bat %.1fC, wh_in %.3fWh, wh_out %.3fWh, v_bat %.1fV",
 						state_str(state),
+						mc_interface_fault_to_string(f),
 						(double)prev_printed_fets_temp,
 						(double)prev_printed_motor_temp,
 						(double)prev_printed_bat_temp,
 						(double)prev_printed_wh_in,
 						(double)prev_printed_wh_out,
-						(double)prev_printed_bat_v,
-						mc_interface_fault_to_string(f));
+						(double)prev_printed_bat_v);
 	}
 }
 
@@ -2241,7 +2242,7 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 
 			store_config_to_eeprom(&config);
 
-			commands_printf("%s: -- Settings are set -- Happy puffs!", state_str(state));
+			commands_printf("%s: -- Settings are set -- Have a nice puffs!", state_str(state));
 
 			// Announce new settings
 			send_conf(*cur_tac);
