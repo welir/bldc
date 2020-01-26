@@ -1091,6 +1091,11 @@ inline static void get_stats(float *erpm, float *motor_amps, float *power)
 	*power = (float)GET_INPUT_VOLTAGE() * mc_interface_read_reset_avg_input_current();
 }
 
+inline float get_battery_temp(void)
+{
+	return 0; // Not implemented yet
+}
+
 inline static void serialize_alive(uint8_t *buffer, int32_t *ind, const int cur_tac)
 {
 	float erpm;
@@ -1140,6 +1145,7 @@ inline static void send_conf(const int cur_tac)
 	buffer_append_float16(buffer, GET_INPUT_VOLTAGE(), 1e1, &ind);
 	buffer_append_float16(buffer, mc_interface_temp_fet_filtered(), 1e1, &ind);
 	buffer_append_float16(buffer, mc_interface_temp_motor_filtered(), 1e1, &ind);
+	buffer_append_float16(buffer, get_battery_temp(), 1e1, &ind);
 	buffer_append_float32(buffer, mc_interface_get_watt_hours(false), 1e4, &ind);
 	buffer_append_float32(buffer, mc_interface_get_watt_hours_charged(false), 1e4, &ind);
 	serialize_drive(buffer, &ind);
@@ -1375,7 +1381,7 @@ inline static void print_stats_periodically(void)
 	{
 		float fets_temp = mc_interface_temp_fet_filtered();
 		float motor_temp = mc_interface_temp_motor_filtered();
-		float bat_temp = 0; // Not implemented yet
+		float bat_temp = get_battery_temp();
 		float wh_in = mc_interface_get_watt_hours(false);
 		float wh_out = mc_interface_get_watt_hours_charged(false);
 		float bat_v = (float)GET_INPUT_VOLTAGE();
@@ -1404,7 +1410,7 @@ inline static void print_stats_periodically(void)
 
 		commands_printf("%s: fault %s, t_fets %.1fC, t_motor %.1fC, t_bat %.1fC, wh_in %.3fWh, wh_out %.3fWh, v_bat %.1fV",
 						state_str(state),
-						mc_interface_fault_to_string(f),
+						mc_interface_fault_to_string(prev_printed_fault),
 						(double)prev_printed_fets_temp,
 						(double)prev_printed_motor_temp,
 						(double)prev_printed_bat_temp,
