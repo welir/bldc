@@ -165,6 +165,7 @@ static smooth_motor_state terminal_motor_state;
 #endif
 static int next_smooth_motor_adjustment; // Loop count for next motor adjustment
 static int prev_smooth_motor_adjustment; // Loop count of previous motor adjustment
+static float amps_per_sec;				 // Speed to change force during smooth motor adjustments, calculated
 
 /*
 	Skypuff relies on system drive settings to calculate rope meters
@@ -187,7 +188,7 @@ static const skypuff_drive max_drive_limits = {
 // Check them on UI side
 static const skypuff_config min_config = {
 	.amps_per_kg = 0.5,
-	.amps_per_sec = 0.5,
+	.pull_applying_period = 1, // 0.001 secs
 	.rope_length = 5,
 	.braking_length = 5,
 	.braking_extension_length = 3, // To create trigger length after unwinding
@@ -215,8 +216,8 @@ static const skypuff_config min_config = {
 
 static const skypuff_config max_config = {
 	.amps_per_kg = 30,
-	.amps_per_sec = 5000,	  // Almost instant set possible
-	.rope_length = 5000 * 120, // 120 - maximum motor poles * 3
+	.pull_applying_period = 10000, // 10 secs
+	.rope_length = 5000 * 120,	 // 120 - maximum motor poles * 3
 	.braking_length = 100 * 120,
 	.braking_extension_length = 5000 * 120,
 	.slowing_length = 100 * 120,
@@ -346,10 +347,15 @@ inline static int smooth_motor_prev_adjustment_delay(void)
 	return prev_adjustment_delay;
 }
 
+inline static void smooth_calculate_new_speed(void)
+{
+	amps_per_sec = config.pull_current / ((float)config.pull_applying_period / (float)1000.0);
+}
+
 // Do not complicate this calculation with jumps over unwinding boundaries
 inline static int smooth_calc_next_delay(const float c1, const float c2)
 {
-	double secs_delay = fabs(c2 - c1) / (double)config.amps_per_sec;
+	double secs_delay = fabs(c2 - c1) / (double)amps_per_sec;
 	int millis_delay = (int)(secs_delay * (double)1000.0);
 
 #ifdef DEBUG_SMOOTH_MOTOR
@@ -380,7 +386,7 @@ inline static float smooth_calc_step(const float c1,
 									 int *next_delay)
 {
 	// Calculate current step respecting force changing speed and delay from previous force adjustment
-	float step = config.amps_per_sec * (float)prev_adjustment_delay / (float)1000.0;
+	float step = amps_per_sec * (float)prev_adjustment_delay / (float)1000.0;
 
 	float c;
 
@@ -698,8 +704,8 @@ static bool is_config_out_of_limits(const skypuff_config *conf)
 {
 	return is_float_out_of_limits("amps_per_kg", "KgA", conf->amps_per_kg,
 								  min_config.amps_per_kg, max_config.amps_per_kg) ||
-		   is_float_out_of_limits("amps_per_sec", "A/Sec", conf->amps_per_sec,
-								  min_config.amps_per_sec, max_config.amps_per_sec) ||
+		   is_int_out_of_limits("pull_applying_period", "milliseconds", conf->pull_applying_period,
+								min_config.pull_applying_period, max_config.pull_applying_period) ||
 		   is_distance_out_of_limits("rope_length", conf->rope_length,
 									 min_config.rope_length, max_config.rope_length) ||
 		   is_distance_out_of_limits("braking_length", conf->braking_length,
@@ -964,8 +970,8 @@ static void set_example_conf(skypuff_config *cfg)
 	cfg->manual_slow_erpm = ms_to_erpm(2);
 
 	// Forces
-	cfg->amps_per_kg = 7;					  // 7 Amps for 1Kg force
-	cfg->amps_per_sec = 1 * cfg->amps_per_kg; // Change force slowly 1 Kg/sec
+	cfg->amps_per_kg = 7;			  // 7 Amps for 1Kg force
+	cfg->pull_applying_period = 2000; // 2 secs
 	cfg->brake_current = 0.3 * cfg->amps_per_kg;
 	cfg->slowing_current = 0.5 * cfg->amps_per_kg;
 	cfg->manual_brake_current = 1 * cfg->amps_per_kg;
@@ -1014,7 +1020,7 @@ inline static bool deserialize_drive(unsigned char *data, unsigned int len, skyp
 inline static void serialize_config(uint8_t *buffer, int32_t *ind)
 {
 	buffer_append_float32_auto(buffer, config.amps_per_kg, ind);
-	buffer_append_float32_auto(buffer, config.amps_per_sec, ind);
+	buffer_append_int16(buffer, config.pull_applying_period, ind);
 	buffer_append_int32(buffer, config.rope_length, ind);
 	buffer_append_int32(buffer, config.braking_length, ind);
 	buffer_append_int32(buffer, config.braking_extension_length, ind);
@@ -1042,7 +1048,7 @@ inline static void serialize_config(uint8_t *buffer, int32_t *ind)
 
 inline static bool deserialize_config(unsigned char *data, unsigned int len, skypuff_config *to, int32_t *ind)
 {
-	const int32_t serialized_settings_v1_length = 4 * 25;
+	const int32_t serialized_settings_v1_length = 4 * 25 - 2;
 
 	int available_bytes = len - *ind;
 	if (available_bytes < serialized_settings_v1_length)
@@ -1053,7 +1059,7 @@ inline static bool deserialize_config(unsigned char *data, unsigned int len, sky
 	}
 
 	to->amps_per_kg = buffer_get_float32_auto(data, ind);
-	to->amps_per_sec = buffer_get_float32_auto(data, ind);
+	to->pull_applying_period = buffer_get_int16(data, ind);
 	to->rope_length = buffer_get_int32(data, ind);
 	to->braking_length = buffer_get_int32(data, ind);
 	to->braking_extension_length = buffer_get_int32(data, ind);
@@ -1145,6 +1151,7 @@ inline static void send_conf(const int cur_tac)
 	buffer_append_float16(buffer, fmax(mc_conf->l_min_vin, mc_conf->l_battery_cut_start), 1e1, &ind);
 	buffer_append_float16(buffer, mc_conf->l_max_vin, 1e1, &ind);
 	buffer[ind++] = mc_conf->si_battery_cells;
+	buffer[ind++] = mc_conf->si_battery_type;
 	// And stats
 	buffer_append_float16(buffer, v_in_filtered, 1e2, &ind);
 	buffer_append_float16(buffer, mc_interface_temp_fet_filtered(), 1e1, &ind);
@@ -1266,6 +1273,9 @@ void app_custom_start(void)
 	smooth_motor_release();
 
 	read_config_from_eeprom(&config);
+
+	// Update smooth speed for current pull
+	smooth_calculate_new_speed();
 
 	// Check system drive settings and our config for limits
 	set_drive.motor_poles = mc_conf->si_motor_poles;
@@ -1947,7 +1957,7 @@ inline static void print_conf(const int cur_tac)
 
 	commands_printf("SkyPUFF configuration version %s:", sk_command_str(SK_COMM_SETTINGS_V1));
 	commands_printf("  amperes per 1kg force: %.1fAKg", (double)config.amps_per_kg);
-	commands_printf("  force changing speed: %.2fKg/sec (%.1fA/sec)", (double)(config.amps_per_sec / config.amps_per_kg), (double)config.amps_per_sec);
+	commands_printf("  pull applying period: %.1fs (%d loops)", (double)config.pull_applying_period / (double)1000.0, config.pull_applying_period);
 	commands_printf("  rope length: %.2fm (%d steps)", (double)tac_steps_to_meters(config.rope_length), config.rope_length);
 	commands_printf("  braking range: %.2fm (%d steps)", (double)tac_steps_to_meters(config.braking_length), config.braking_length);
 	commands_printf("  braking extension range: %.2fm (%d steps)", (double)tac_steps_to_meters(config.braking_extension_length), config.braking_extension_length);
@@ -1977,6 +1987,7 @@ inline static void print_conf(const int cur_tac)
 	commands_printf("  %s: pos %.2fm (%d steps), speed %.1fm/s (%.1f ERPM)", state_str(state), (double)tac_steps_to_meters(cur_tac), cur_tac, (double)erpm_to_ms(erpm), (double)erpm);
 	commands_printf("  motor state %s: %.2fkg (%.1fA), power: %.1fW", motor_mode_str(current_motor_state.mode), (double)(motor_amps / config.amps_per_kg), (double)motor_amps, (double)power);
 	commands_printf("  timeout reset interval: %dms", timeout_reset_interval);
+	commands_printf("  calculated force changing speed: %.2fKg/sec (%.1fA/sec)", (double)(amps_per_sec / config.amps_per_kg), (double)amps_per_sec);
 	commands_printf("  loop counter: %d, alive until: %d, %s", loop_step, alive_until, loop_step >= alive_until ? "communication timeout" : "no timeout");
 }
 
@@ -2128,8 +2139,12 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 
 		config.pull_current = pull_current;
 
-		commands_printf("%s: -- %.2fKg (%.1fA) is set",
-						state_str(state), (double)terminal_pull_kg, (double)config.pull_current);
+		// Update smooth speed
+		smooth_calculate_new_speed();
+
+		commands_printf("%s: -- %.2fKg (%.1fA, %.1fA/sec) is set",
+						state_str(state), (double)terminal_pull_kg, (double)config.pull_current,
+						(double)amps_per_sec);
 
 		// Update pull force now?
 		switch (state)
@@ -2225,6 +2240,13 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 			if (is_drive_config_out_of_limits(&set_drive) || is_config_out_of_limits(&set_config))
 				break;
 
+			// Use braking_length from received config
+			if (*abs_tac > set_config.braking_length + set_config.braking_extension_length)
+			{
+				commands_printf("%s: -- Can't set configuration -- Position is out of safe braking zone", state_str(state));
+				break;
+			}
+
 			// mc_configuration changed?
 			if (set_drive.motor_poles != mc_conf->si_motor_poles ||
 				set_drive.gear_ratio != mc_conf->si_gear_ratio ||
@@ -2242,14 +2264,9 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 				mc_conf = mc_interface_get_configuration();
 			}
 
-			// Use braking_length from received config
-			if (*abs_tac > set_config.braking_length + set_config.braking_extension_length)
-			{
-				commands_printf("%s: -- Can't set configuration -- Position is out of safe braking zone", state_str(state));
-				break;
-			}
-
 			config = set_config;
+
+			smooth_calculate_new_speed();
 
 			store_config_to_eeprom(&config);
 
