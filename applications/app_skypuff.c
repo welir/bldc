@@ -1145,7 +1145,7 @@ inline static void send_conf(const int cur_tac)
 	buffer_append_float16(buffer, fmax(mc_conf->l_min_vin, mc_conf->l_battery_cut_start), 1e1, &ind);
 	buffer_append_float16(buffer, mc_conf->l_max_vin, 1e1, &ind);
 	// And stats
-	buffer_append_float16(buffer, v_in_filtered, 1e1, &ind);
+	buffer_append_float16(buffer, v_in_filtered, 1e2, &ind);
 	buffer_append_float16(buffer, mc_interface_temp_fet_filtered(), 1e1, &ind);
 	buffer_append_float16(buffer, mc_interface_temp_motor_filtered(), 1e1, &ind);
 	buffer_append_float16(buffer, get_battery_temp(), 1e1, &ind);
@@ -1412,7 +1412,7 @@ inline static void print_stats_periodically(void)
 		prev_temps_print = loop_step;
 		prev_printed_fault = f;
 
-		commands_printf("%s: fault %s, t_fets %.1fC, t_motor %.1fC, t_bat %.1fC, wh_in %.3fWh, wh_out %.3fWh, v_bat %.1fV",
+		commands_printf("%s: fault %s, t_fets %.1fC, t_motor %.1fC, t_bat %.1fC, wh_in %.3fWh, wh_out %.3fWh, v_bat %.2fV",
 						state_str(state),
 						mc_interface_fault_to_string(prev_printed_fault),
 						(double)prev_printed_fets_temp,
