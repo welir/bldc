@@ -112,6 +112,7 @@ static float prev_printed_bat_v;		 // Do not print small changes
 static float prev_printed_wh_out;		 // Do not print small changes
 static float prev_printed_wh_in;		 // Do not print small changes
 static mc_fault_code prev_printed_fault; // Do not print the same fault many times
+static float v_in_filtered;				 // Average for v_in
 static int alive_until;					 // In good communication we trust until (i < alive_until)
 static int state_start_time;			 // Count the duration of state
 static float terminal_pull_kg;			 // Pulling force to set
@@ -1088,7 +1089,7 @@ inline static void get_stats(float *erpm, float *motor_amps, float *power)
 {
 	*erpm = mc_interface_get_rpm();
 	*motor_amps = mc_interface_read_reset_avg_motor_current();
-	*power = (float)GET_INPUT_VOLTAGE() * mc_interface_read_reset_avg_input_current();
+	*power = v_in_filtered * mc_interface_read_reset_avg_input_current();
 }
 
 inline float get_battery_temp(void)
@@ -1137,14 +1138,14 @@ inline static void send_conf(const int cur_tac)
 	buffer[ind++] = state;
 	buffer[ind++] = mc_interface_get_fault();
 
-	// Let UI set scales limits
+	// Let UI to set limits of the scales
 	buffer_append_float16(buffer, mc_conf->lo_current_max, 1e1, &ind);
 	buffer_append_float16(buffer, mc_conf->l_temp_fet_start, 1e1, &ind);
 	buffer_append_float16(buffer, mc_conf->l_temp_motor_start, 1e1, &ind);
 	buffer_append_float16(buffer, fmax(mc_conf->l_min_vin, mc_conf->l_battery_cut_start), 1e1, &ind);
 	buffer_append_float16(buffer, mc_conf->l_max_vin, 1e1, &ind);
-	// And instantly print stats
-	buffer_append_float16(buffer, GET_INPUT_VOLTAGE(), 1e1, &ind);
+	// And stats
+	buffer_append_float16(buffer, v_in_filtered, 1e1, &ind);
 	buffer_append_float16(buffer, mc_interface_temp_fet_filtered(), 1e1, &ind);
 	buffer_append_float16(buffer, mc_interface_temp_motor_filtered(), 1e1, &ind);
 	buffer_append_float16(buffer, get_battery_temp(), 1e1, &ind);
@@ -1257,6 +1258,7 @@ void app_custom_start(void)
 	prev_printed_bat_v = 0;
 	prev_printed_tac = INT_MIN / 2;
 	prev_printed_fault = FAULT_CODE_NONE;
+	v_in_filtered = GET_INPUT_VOLTAGE();
 	terminal_command = DO_NOTHING;
 	stop_now = false;
 
@@ -1376,6 +1378,7 @@ static bool brake_or_slowing(const int cur_tac, const int abs_tac)
 
 inline static void print_stats_periodically(void)
 {
+	UTILS_LP_FAST(v_in_filtered, GET_INPUT_VOLTAGE(), 0.1);
 	mc_fault_code f = mc_interface_get_fault();
 
 	// Will print new fault immediately
@@ -1386,7 +1389,6 @@ inline static void print_stats_periodically(void)
 		float bat_temp = get_battery_temp();
 		float wh_in = mc_interface_get_watt_hours(false);
 		float wh_out = mc_interface_get_watt_hours_charged(false);
-		float bat_v = (float)GET_INPUT_VOLTAGE();
 
 		// Small changes?
 		if (f == prev_printed_fault &&
@@ -1395,7 +1397,7 @@ inline static void print_stats_periodically(void)
 			fabs(bat_temp - prev_printed_bat_temp) < (double)1 &&
 			fabs(wh_in - prev_printed_wh_in) < (double)0.001 &&
 			fabs(wh_out - prev_printed_wh_out) < (double)0.001 &&
-			fabs(bat_v - prev_printed_bat_v) < (double)0.1)
+			fabs(v_in_filtered - prev_printed_bat_v) < (double)0.1)
 		{
 			prev_temps_print = loop_step;
 			return;
@@ -1406,7 +1408,7 @@ inline static void print_stats_periodically(void)
 		prev_printed_bat_temp = bat_temp;
 		prev_printed_wh_in = wh_in;
 		prev_printed_wh_out = wh_out;
-		prev_printed_bat_v = bat_v;
+		prev_printed_bat_v = v_in_filtered;
 		prev_temps_print = loop_step;
 		prev_printed_fault = f;
 
