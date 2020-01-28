@@ -1144,6 +1144,7 @@ inline static void send_conf(const int cur_tac)
 	buffer_append_float16(buffer, mc_conf->l_temp_motor_start, 1e1, &ind);
 	buffer_append_float16(buffer, fmax(mc_conf->l_min_vin, mc_conf->l_battery_cut_start), 1e1, &ind);
 	buffer_append_float16(buffer, mc_conf->l_max_vin, 1e1, &ind);
+	buffer[ind++] = mc_conf->si_battery_cells;
 	// And stats
 	buffer_append_float16(buffer, v_in_filtered, 1e2, &ind);
 	buffer_append_float16(buffer, mc_interface_temp_fet_filtered(), 1e1, &ind);
