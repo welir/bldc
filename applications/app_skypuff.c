@@ -113,6 +113,7 @@ static float prev_printed_wh_out;		 // Do not print small changes
 static float prev_printed_wh_in;		 // Do not print small changes
 static mc_fault_code prev_printed_fault; // Do not print the same fault many times
 static float v_in_filtered;				 // Average for v_in
+static float erpm_filtered;				 // For speed up states
 static int alive_until;					 // In good communication we trust until (i < alive_until)
 static int state_start_time;			 // Count the duration of state
 static float terminal_pull_kg;			 // Pulling force to set
@@ -888,6 +889,8 @@ inline static void manual_slow_speed_up(const int cur_tac)
 	char msg[64];
 	snprintf(msg, 64, ", until: %.1fms (%.0f ERPM)",
 			 (double)erpm_to_ms(config.manual_slow_erpm), (double)config.manual_slow_erpm);
+	// Set high filtered value on entering speed up mode
+	erpm_filtered = cur_tac < 0 ? config.manual_slow_erpm : -config.manual_slow_erpm;
 	pull_state(cur_tac, config.manual_slow_speed_up_current, MANUAL_SLOW_SPEED_UP, msg);
 }
 
@@ -896,6 +899,8 @@ inline static void manual_slow_back_speed_up(const int cur_tac)
 	char msg[64];
 	snprintf(msg, 64, ", until: %.1fms (%.0f ERPM)",
 			 (double)erpm_to_ms(config.manual_slow_erpm), (double)config.manual_slow_erpm);
+	// Set high filtered value on entering speed up mode
+	erpm_filtered = cur_tac < 0 ? -config.manual_slow_erpm : config.manual_slow_erpm;
 	pull_state(cur_tac, -config.manual_slow_speed_up_current, MANUAL_SLOW_BACK_SPEED_UP, msg);
 }
 
@@ -1459,18 +1464,14 @@ inline static void print_position_periodically(const int cur_tac, const int dela
 	}
 }
 
-inline static bool is_direction_changed_or_stopped(const float cur_erpm)
+inline static bool is_filtered_speed_too_low(const float cur_erpm)
 {
-	float tmp_erpm = prev_erpm;
-	prev_erpm = cur_erpm;
+	UTILS_LP_FAST(erpm_filtered, cur_erpm, 0.01);
 
-	// Rotating direction changed or stopped?
-	if ((tmp_erpm < -1 && cur_erpm >= 0) || (tmp_erpm > 1 && cur_erpm <= 0))
+	// Takes about 500 iterations if speed is about zero to reach filtered 0.1
+	if (fabs(erpm_filtered) < (double)0.1)
 	{
-		commands_printf("%s: -- rotation direction changed, prev_erpm: %.1fms (%0.f ERPM), cur_erpm: %.1fms (%0.f ERPM)",
-						state_str(state),
-						(double)erpm_to_ms(tmp_erpm), (double)tmp_erpm,
-						(double)erpm_to_ms(cur_erpm), (double)cur_erpm);
+		commands_printf("%s: -- Too slow speed up", state_str(state));
 		return true;
 	}
 
@@ -1498,7 +1499,7 @@ inline static bool unwinded_to_opposite_braking_zone(const int cur_tac, const fl
 	if ((cur_erpm > 0 && cur_tac >= config.braking_length) ||
 		(cur_erpm < 0 && cur_tac <= -config.braking_length))
 	{
-		commands_printf("%s: -- unwinded to opposite braking zone", state_str(state));
+		commands_printf("%s: -- Unwinded to opposite braking zone", state_str(state));
 		return true;
 	}
 
@@ -1676,18 +1677,11 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		abs_current = fabs(cur_current);
 		cur_erpm = mc_interface_get_rpm();
 
-		// Rotating direction changed or stopped?
-		if (is_direction_changed_or_stopped(cur_erpm))
-		{
-			brake_or_unwinding(cur_tac, abs_tac);
-			break;
-		}
-
 		// If current above the limits - brake or unwinding
 		if (abs_current > config.slow_max_current)
 		{
 			commands_printf(
-				"SLOW: speed %.1fms (%.0f ERPM), -- slow pulling too high %.1fKg (%.1fA) is more %.1fKg (%.1fA)",
+				"SLOW: speed %.1fms (%.0f ERPM), -- Pulling too high %.1fKg (%.1fA) is more %.1fKg (%.1fA)",
 				(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
 				(double)(cur_current / config.amps_per_kg), (double)cur_current,
 				(double)(config.slow_max_current / config.amps_per_kg), (double)config.slow_max_current);
@@ -1724,7 +1718,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		cur_erpm = mc_interface_get_rpm();
 
 		// Rotating direction changed or stopped?
-		if (is_direction_changed_or_stopped(cur_erpm))
+		if (is_filtered_speed_too_low(cur_erpm))
 		{
 			manual_brake(cur_tac);
 			break;
@@ -1749,7 +1743,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		cur_erpm = mc_interface_get_rpm();
 
 		// Rotating direction changed or stopped?
-		if (is_direction_changed_or_stopped(cur_erpm))
+		if (is_filtered_speed_too_low(cur_erpm))
 		{
 			manual_brake(cur_tac);
 			break;
@@ -1783,18 +1777,11 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 			break;
 		}
 
-		// Rotating direction changed or stopped?
-		if (is_direction_changed_or_stopped(cur_erpm))
-		{
-			brake_or_manual_brake(cur_tac, abs_tac);
-			break;
-		}
-
-		// If current above the limits - brake or manual_brake again
+		// If current is above the limits
 		if (abs_current > config.manual_slow_max_current)
 		{
 			commands_printf(
-				"MANUAL_SLOW: speed %.1fms (%.0f ERPM), -- slow pulling too high %.1fKg (%.1fA) is more %.1fKg (%.1fA)",
+				"MANUAL_SLOW: speed %.1fms (%.0f ERPM), -- Pulling too high %.1fKg (%.1fA) is more %.1fKg (%.1fA)",
 				(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
 				(double)(cur_current / config.amps_per_kg), (double)cur_current,
 				(double)(config.manual_slow_max_current / config.amps_per_kg), (double)config.manual_slow_max_current);
@@ -1829,18 +1816,11 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		abs_current = fabs(cur_current);
 		cur_erpm = mc_interface_get_rpm();
 
-		// Rotating direction changed or stopped?
-		if (is_direction_changed_or_stopped(cur_erpm))
-		{
-			brake_or_manual_brake(cur_tac, abs_tac);
-			break;
-		}
-
-		// If current above the limits - brake or unwinding
+		// If current is above the limits
 		if (abs_current > config.manual_slow_max_current)
 		{
 			commands_printf(
-				"MANUAL_SLOW_BACK: speed %.1fms (%.0f ERPM), -- slow pulling too high %.1fKg (%.1fA) is more %.1fKg (%.1fA)",
+				"MANUAL_SLOW_BACK: speed %.1fms (%.0f ERPM), -- Pulling too high %.1fKg (%.1fA) is more %.1fKg (%.1fA)",
 				(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
 				(double)(cur_current / config.amps_per_kg), (double)cur_current,
 				(double)(config.manual_slow_max_current / config.amps_per_kg),
