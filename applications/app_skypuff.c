@@ -1717,29 +1717,17 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		if (!(loop_step % timeout_reset_interval))
 			timeout_reset();
 
+		// Go braking or slowing?
+		if (brake_or_slowing(cur_tac, abs_tac))
+			break;
+
 		cur_erpm = mc_interface_get_rpm();
 		abs_erpm = fabs(cur_erpm);
-
-		// Do not speed up in the braking zone
-		if (abs_tac <= config.braking_length)
-		{
-			commands_printf("%s: speed %.1fms (%.0f ERPM), -- Braking zone detected",
-							state_str(state), (double)erpm_to_ms(cur_erpm), (double)cur_erpm);
-			braking(cur_tac);
-			break;
-		}
 
 		// Rotating direction changed or stopped?
 		if (is_direction_changed_or_stopped(cur_erpm))
 		{
 			manual_brake(cur_tac);
-			break;
-		}
-
-		// Fast enough and slowing zone?
-		if (abs_erpm >= config.slow_erpm && abs_tac <= config.braking_length + config.slowing_length)
-		{
-			slow(cur_tac, cur_erpm);
 			break;
 		}
 
