@@ -1148,12 +1148,14 @@ inline static void send_conf(const int cur_tac)
 	buffer_append_float16(buffer, mc_conf->lo_current_max, 1e1, &ind);
 	buffer_append_float16(buffer, mc_conf->l_temp_fet_start, 1e1, &ind);
 	buffer_append_float16(buffer, mc_conf->l_temp_motor_start, 1e1, &ind);
-	buffer_append_float16(buffer, fmax(mc_conf->l_min_vin, mc_conf->l_battery_cut_start), 1e1, &ind);
-	buffer_append_float16(buffer, mc_conf->l_max_vin, 1e1, &ind);
+	buffer_append_float32(buffer, fmax(mc_conf->l_min_vin, mc_conf->l_battery_cut_start), 1e2, &ind);
+	buffer_append_float32(buffer, mc_conf->l_max_vin, 1e2, &ind);
+
 	buffer[ind++] = mc_conf->si_battery_cells;
 	buffer[ind++] = mc_conf->si_battery_type;
+
 	// And stats
-	buffer_append_float16(buffer, v_in_filtered, 1e2, &ind);
+	buffer_append_float32(buffer, v_in_filtered, 1e2, &ind);
 	buffer_append_float16(buffer, mc_interface_temp_fet_filtered(), 1e1, &ind);
 	buffer_append_float16(buffer, mc_interface_temp_motor_filtered(), 1e1, &ind);
 	buffer_append_float16(buffer, get_battery_temp(), 1e1, &ind);
@@ -1499,7 +1501,7 @@ inline static void slowing_or_speed_up_print(const int cur_tac, const float cur_
 		int distance_left = abs(cur_tac) - config.braking_length;
 		prev_print = loop_step;
 		commands_printf(
-			"%s, pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), until %.1fms (%.0f ERPM), -- %.2fm to braking zone",
+			"%s: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), until %.1fms (%.0f ERPM), -- %.2fm to braking zone",
 			state_str(state),
 			(double)tac_steps_to_meters(cur_tac), cur_tac,
 			(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
