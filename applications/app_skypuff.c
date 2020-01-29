@@ -1736,6 +1736,13 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 			break;
 		}
 
+		// Fast enough and slowing zone?
+		if (abs_erpm >= config.slow_erpm && abs_tac <= config.braking_length + config.slowing_length)
+		{
+			slow(cur_tac, cur_erpm);
+			break;
+		}
+
 		// Fast enough for PID speed?
 		if (abs_erpm >= config.manual_slow_erpm)
 		{
