@@ -74,7 +74,7 @@
 const int short_print_delay = 500; // 0.5s, measured in control loop counts
 const int long_print_delay = 3000;
 const int temps_print_delay = 15000;
-const int smooth_max_step_delay = 100;
+const int smooth_max_step_delay = 50;
 
 const char *limits_wrn = "-- CONFIGURATION IS OUT OF LIMITS --";
 
@@ -971,7 +971,7 @@ static void set_example_conf(skypuff_config *cfg)
 
 	// Forces
 	cfg->amps_per_kg = 7;			  // 7 Amps for 1Kg force
-	cfg->pull_applying_period = 2000; // 2 secs
+	cfg->pull_applying_period = 1500; // 1.5 secs
 	cfg->brake_current = 0.3 * cfg->amps_per_kg;
 	cfg->slowing_current = 0.5 * cfg->amps_per_kg;
 	cfg->manual_brake_current = 1 * cfg->amps_per_kg;
