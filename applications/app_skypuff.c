@@ -1722,7 +1722,6 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 			break;
 
 		cur_erpm = mc_interface_get_rpm();
-		abs_erpm = fabs(cur_erpm);
 
 		// Rotating direction changed or stopped?
 		if (is_direction_changed_or_stopped(cur_erpm))
@@ -1731,8 +1730,9 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 			break;
 		}
 
-		// Fast enough for PID speed?
-		if (abs_erpm >= config.manual_slow_erpm)
+		// Fast enough for PID speed in zero direction?
+		if ((cur_tac < 0 && cur_erpm >= config.manual_slow_erpm) ||
+			(cur_tac >= 0 && cur_erpm <= -config.manual_slow_erpm))
 		{
 			manual_slow(cur_tac, cur_erpm);
 			break;
@@ -1747,7 +1747,6 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 			timeout_reset();
 
 		cur_erpm = mc_interface_get_rpm();
-		abs_erpm = fabs(cur_erpm);
 
 		// Rotating direction changed or stopped?
 		if (is_direction_changed_or_stopped(cur_erpm))
@@ -1756,8 +1755,9 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 			break;
 		}
 
-		// Fast enough for PID speed?
-		if (abs_erpm > config.manual_slow_erpm)
+		// Fast enough for PID speed in opposite from zero direction?
+		if ((cur_tac >= 0 && cur_erpm >= config.manual_slow_erpm) ||
+			(cur_tac < 0 && cur_erpm <= -config.manual_slow_erpm))
 		{
 			manual_slow_back(cur_tac, cur_erpm);
 			break;
