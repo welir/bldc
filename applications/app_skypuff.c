@@ -1368,7 +1368,7 @@ static bool brake_or_slowing(const int cur_tac, const int abs_tac)
 		return true;
 	}
 
-	// Slowing range?
+	// Slowing range and direction to zero?
 	if (abs_tac <= config.braking_length + config.slowing_length)
 	{
 		float erpm = mc_interface_get_rpm();
@@ -1491,6 +1491,18 @@ inline static void brake_or_manual_brake(const int cur_tac, const int abs_tac)
 		braking(cur_tac);
 	else
 		manual_brake(cur_tac);
+}
+
+inline static bool unwinded_to_opposite_braking_zone(const int cur_tac, const float cur_erpm)
+{
+	if ((cur_erpm > 0 && cur_tac >= config.braking_length) ||
+		(cur_erpm < 0 && cur_tac <= -config.braking_length))
+	{
+		commands_printf("%s: -- unwinded to opposite braking zone", state_str(state));
+		return true;
+	}
+
+	return false;
 }
 
 // More prints to tweak slowing zone
@@ -1685,10 +1697,8 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		}
 
 		// Slowly rewinded more then opposite side of braking  zone?
-		if ((cur_erpm > 0 && cur_tac >= config.braking_length) ||
-			(cur_erpm < 0 && cur_tac <= -config.braking_length))
+		if (unwinded_to_opposite_braking_zone(cur_tac, cur_erpm))
 		{
-			commands_printf("SLOW: -- unwinded to opposite braking zone");
 			braking(cur_tac);
 			break;
 		}
@@ -1714,7 +1724,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		if (abs_tac <= config.braking_length)
 		{
 			commands_printf("%s: speed %.1fms (%.0f ERPM), -- Braking zone detected",
-							(double)erpm_to_ms(cur_erpm), (double)cur_erpm, state_str(state));
+							state_str(state), (double)erpm_to_ms(cur_erpm), (double)cur_erpm);
 			braking(cur_tac);
 			break;
 		}
@@ -1799,10 +1809,8 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		}
 
 		// Slowly rewinded more then opposite side of braking zone?
-		if ((cur_erpm > 0 && cur_tac >= config.braking_length) ||
-			(cur_erpm < 0 && cur_tac <= -config.braking_length))
+		if (unwinded_to_opposite_braking_zone(cur_tac, cur_erpm))
 		{
-			commands_printf("MANUAL_SLOW: -- winded to opposite braking zone");
 			braking(cur_tac);
 			break;
 		}
