@@ -1681,7 +1681,8 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		if (abs_current > config.slow_max_current)
 		{
 			commands_printf(
-				"SLOW: speed %.1fms (%.0f ERPM), -- Pulling too high %.1fKg (%.1fA) is more %.1fKg (%.1fA)",
+				"SLOW: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), -- Pulling too high %.1fKg (%.1fA) is more %.1fKg (%.1fA)",
+				(double)tac_steps_to_meters(cur_tac), cur_tac,
 				(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
 				(double)(cur_current / config.amps_per_kg), (double)cur_current,
 				(double)(config.slow_max_current / config.amps_per_kg), (double)config.slow_max_current);
@@ -1781,7 +1782,8 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		if (abs_current > config.manual_slow_max_current)
 		{
 			commands_printf(
-				"MANUAL_SLOW: speed %.1fms (%.0f ERPM), -- Pulling too high %.1fKg (%.1fA) is more %.1fKg (%.1fA)",
+				"MANUAL_SLOW: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), -- Pulling too high %.1fKg (%.1fA) is more %.1fKg (%.1fA)",
+				(double)tac_steps_to_meters(cur_tac), cur_tac,
 				(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
 				(double)(cur_current / config.amps_per_kg), (double)cur_current,
 				(double)(config.manual_slow_max_current / config.amps_per_kg), (double)config.manual_slow_max_current);
@@ -1820,11 +1822,11 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		if (abs_current > config.manual_slow_max_current)
 		{
 			commands_printf(
-				"MANUAL_SLOW_BACK: speed %.1fms (%.0f ERPM), -- Pulling too high %.1fKg (%.1fA) is more %.1fKg (%.1fA)",
+				"MANUAL_SLOW_BACK: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), -- Pulling too high %.1fKg (%.1fA) is more %.1fKg (%.1fA)",
+				(double)tac_steps_to_meters(cur_tac), cur_tac,
 				(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
 				(double)(cur_current / config.amps_per_kg), (double)cur_current,
-				(double)(config.manual_slow_max_current / config.amps_per_kg),
-				(double)config.manual_slow_max_current);
+				(double)(config.manual_slow_max_current / config.amps_per_kg), (double)config.manual_slow_max_current);
 
 			brake_or_manual_brake(cur_tac, abs_tac);
 			break;
