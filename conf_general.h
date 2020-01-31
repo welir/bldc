@@ -21,8 +21,8 @@
 #define CONF_GENERAL_H_
 
 // Firmware version
-#define FW_VERSION_MAJOR		3
-#define FW_VERSION_MINOR		65
+#define FW_VERSION_MAJOR		4
+#define FW_VERSION_MINOR		00
 
 #include "datatypes.h"
 
@@ -85,6 +85,9 @@
 //#define HW_SOURCE "hw_axiom.c"
 //#define HW_HEADER "hw_axiom.h"
 
+//#define HW_SOURCE "hw_luna_bbshd.c"
+//#define HW_HEADER "hw_luna_bbshd.h"
+
 //#define HW_SOURCE "hw_rh.c"
 //#define HW_HEADER "hw_rh.h"
 
@@ -123,6 +126,9 @@
 
 //#define HW_SOURCE "hw_rd2.c"
 //#define HW_HEADER "hw_rd2.h"
+
+//#define HW_SOURCE "hw_100_250.c"
+//#define HW_HEADER "hw_100_250.h"
 #endif
 
 #ifndef HW_SOURCE
@@ -232,6 +238,9 @@
 // Use the pins for the hardware SPI port instead of the hall/encoder pins for the AS5047
 #ifndef AS5047_USE_HW_SPI_PINS
 #define AS5047_USE_HW_SPI_PINS		0
+#endif
+#ifndef AD2S1205_USE_HW_SPI_PINS
+#define AD2S1205_USE_HW_SPI_PINS	0
 #endif
 
 /*

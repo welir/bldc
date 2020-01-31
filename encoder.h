@@ -37,12 +37,20 @@ void encoder_tim_isr(void);
 void encoder_set_counts(uint32_t counts);
 bool encoder_index_found(void);
 
-uint16_t encoder_spi_get_val(void);
+uint32_t encoder_spi_get_val(void);
 uint32_t encoder_spi_get_error_cnt(void);
 float encoder_spi_get_error_rate(void);
+uint32_t encoder_resolver_loss_of_tracking_error_cnt(void);
+uint32_t encoder_resolver_degradation_of_signal_error_cnt(void);
+uint32_t encoder_resolver_loss_of_signal_error_cnt(void);
+float encoder_resolver_loss_of_tracking_error_rate(void);
+float encoder_resolver_degradation_of_signal_error_rate(void);
+float encoder_resolver_loss_of_signal_error_rate(void);
 uint32_t encoder_sincos_get_signal_below_min_error_cnt(void);
 uint32_t encoder_sincos_get_signal_above_max_error_cnt(void);
 float encoder_sincos_get_signal_below_min_error_rate(void);
 float encoder_sincos_get_signal_above_max_error_rate(void);
+uint8_t* encoder_ts5700n8501_get_raw_status(void);
+uint32_t encoder_ts57n8501_get_abm(void);
 
 #endif /* ENCODER_H_ */

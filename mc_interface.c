@@ -419,6 +419,7 @@ const char* mc_interface_fault_to_string(mc_fault_code fault) {
     case FAULT_CODE_HIGH_OFFSET_CURRENT_SENSOR_2: return "FAULT_CODE_HIGH_OFFSET_CURRENT_SENSOR_2";
     case FAULT_CODE_HIGH_OFFSET_CURRENT_SENSOR_3: return "FAULT_CODE_HIGH_OFFSET_CURRENT_SENSOR_3";
     case FAULT_CODE_UNBALANCED_CURRENTS: return "FAULT_CODE_UNBALANCED_CURRENTS";
+    case FAULT_CODE_BRK: return "FAULT_CODE_BRK";
 	default: return "FAULT_UNKNOWN"; break;
 	}
 }
@@ -1544,6 +1545,16 @@ void mc_interface_mc_timer_isr(void) {
 		mc_interface_fault_stop(FAULT_CODE_DRV);
 	}
 
+#ifdef HW_USE_BRK
+	// BRK fault code
+	if (TIM_GetFlagStatus(TIM1, TIM_FLAG_Break) != RESET) {
+		mc_interface_fault_stop(FAULT_CODE_BRK);
+		// latch the BRK/FAULT pin to low until next MCU reset
+		palSetPadMode(BRK_GPIO, BRK_PIN, PAL_MODE_OUTPUT_PUSHPULL);
+		palClearPad(BRK_GPIO, BRK_PIN);
+	}
+#endif
+
 #ifdef HW_VERSION_AXIOM
 	if( m_gate_driver_voltage > HW_GATE_DRIVER_SUPPLY_MAX_VOLTAGE) {
 		mc_interface_fault_stop(FAULT_CODE_GATE_DRIVER_OVER_VOLTAGE);
@@ -1748,35 +1759,40 @@ static void update_override_limits(volatile mc_configuration *conf) {
 	const float rpm_now = mc_interface_get_rpm();
 
 	UTILS_LP_FAST(m_temp_fet, NTC_TEMP(ADC_IND_TEMP_MOS), 0.1);
+	float temp_motor = 0.0;
+
 	switch(conf->m_motor_temp_sens_type) {
 	case TEMP_SENSOR_NTC_10K_25C:
-		UTILS_LP_FAST(m_temp_motor, NTC_TEMP_MOTOR(conf->m_ntc_motor_beta), 0.1);
+		m_temp_motor = NTC_TEMP_MOTOR(conf->m_ntc_motor_beta);
 		break;
+
 	case TEMP_SENSOR_PTC_1K_100C:
-		{
-			float temp = PTC_TEMP_MOTOR(1010.0, conf->m_ptc_motor_coeff, 25);
-
-                	if (UTILS_IS_NAN(temp) || UTILS_IS_INF(temp) || temp > 600.0) {
-                        	temp = 180.0;
-                	}
-
-                	UTILS_LP_FAST(m_temp_motor, temp, 0.1);
-		}
+		temp_motor = PTC_TEMP_MOTOR(1000.0, conf->m_ptc_motor_coeff, 100);
 		break;
-	case TEMP_SENSOR_KTY83_122:
-		{
-			// KTY83_122 datasheet used to approximate
-			// polynom constants: https://docs.google.com/spreadsheets/d/1iJA66biczfaXRNClSsrVF9RJuSAKoDG-bnRZFMOcuwU/edit?usp=sharing
-			// Thanks to: https://vasilisks.wordpress.com/2017/12/14/getting-temperature-from-ntc-kty83-kty84-on-mcu/#more-645
-			// Optimized integer calculations without FPU
-			int32_t raw = ADC_Value[ADC_IND_TEMP_MOTOR];
-			int32_t pow2 = raw*raw;
-			int32_t temp = (((int32_t) (((((int64_t) pow2 * raw) >> 16) * 673718099) >> 16) + (int32_t) (((int64_t) pow2 * -22219886) >> 16) + (raw *444597) + -111101966) >> 16);
 
-			UTILS_LP_FAST(m_temp_motor, (float)temp / (float)10, 0.1);
-		}
-		break;
+	case TEMP_SENSOR_KTY83_122: {
+		// KTY83_122 datasheet used to approximate resistance at given temperature to cubic polynom
+		// https://docs.google.com/spreadsheets/d/1iJA66biczfaXRNClSsrVF9RJuSAKoDG-bnRZFMOcuwU/edit?usp=sharing
+		// Thanks to: https://vasilisks.wordpress.com/2017/12/14/getting-temperature-from-ntc-kty83-kty84-on-mcu/#more-645
+		// You can change pull up resistor and update NTC_RES_MOTOR for your hardware without changing polynom
+		float res = NTC_RES_MOTOR(ADC_Value[ADC_IND_TEMP_MOTOR]);
+		float pow2 = res * res;
+		temp_motor = 0.0000000102114874947423 * pow2 * res - 0.000069967997703501 * pow2 +
+				0.243402040973194 * res - 160.145048329356;
 	}
+	break;
+	}
+
+	// If the reading is messed up (by e.g. reading 0 on the ADC and dividing by 0) we avoid putting an
+	// invalid value in the filter, as it will never recover. It is probably safest to keep running the
+	// motor even if the temperature reading fails. A config option to reduce power on invalid temperature
+	// readings might be useful.
+	if (UTILS_IS_NAN(temp_motor) || UTILS_IS_INF(temp_motor) || temp_motor > 600.0 || temp_motor < -200.0) {
+		temp_motor = -100.0;
+	}
+
+	UTILS_LP_FAST(m_temp_motor, temp_motor, 0.1);
+
 #ifdef HW_VERSION_AXIOM
 	UTILS_LP_FAST(m_gate_driver_voltage, GET_GATE_DRIVER_SUPPLY_VOLTAGE(), 0.01);
 #endif
@@ -2014,6 +2030,16 @@ static THD_FUNCTION(timer_thread, arg) {
 				mc_interface_fault_stop(FAULT_CODE_ENCODER_SINCOS_ABOVE_MAX_AMPLITUDE);
 		}
 
+		if(m_conf.motor_type == MOTOR_TYPE_FOC &&
+			m_conf.foc_sensor_mode == FOC_SENSOR_MODE_ENCODER &&
+			m_conf.m_sensor_port_mode == SENSOR_PORT_MODE_AD2S1205) {
+			if (encoder_resolver_loss_of_tracking_error_rate() > 0.05)
+				mc_interface_fault_stop(FAULT_CODE_RESOLVER_LOT);
+			if (encoder_resolver_degradation_of_signal_error_rate() > 0.05)
+				mc_interface_fault_stop(FAULT_CODE_RESOLVER_DOS);
+			if (encoder_resolver_loss_of_signal_error_rate() > 0.04)
+				mc_interface_fault_stop(FAULT_CODE_RESOLVER_LOS);
+		}
 		// TODO: Implement for BLDC and GPDRIVE
 		if(m_conf.motor_type == MOTOR_TYPE_FOC) {
 			int curr0_offset;

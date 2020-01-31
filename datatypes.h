@@ -52,7 +52,8 @@ typedef enum {
 typedef enum {
 	FOC_SENSOR_MODE_SENSORLESS = 0,
 	FOC_SENSOR_MODE_ENCODER,
-	FOC_SENSOR_MODE_HALL
+	FOC_SENSOR_MODE_HALL,
+	FOC_SENSOR_MODE_HFI
 } mc_foc_sensor_mode;
 
 // Auxiliary output mode
@@ -86,6 +87,19 @@ typedef enum {
 	MOTOR_TYPE_GPD
 } mc_motor_type;
 
+// FOC current controller decoupling mode.
+typedef enum {
+	FOC_CC_DECOUPLING_DISABLED = 0,
+	FOC_CC_DECOUPLING_CROSS,
+	FOC_CC_DECOUPLING_BEMF,
+	FOC_CC_DECOUPLING_CROSS_BEMF
+} mc_foc_cc_decoupling_mode;
+
+typedef enum {
+	FOC_OBSERVER_ORTEGA_ORIGINAL = 0,
+	FOC_OBSERVER_ORTEGA_ITERATIVE
+} mc_foc_observer_type;
+
 typedef enum {
 	FAULT_CODE_NONE = 0,
 	FAULT_CODE_OVER_VOLTAGE,
@@ -105,7 +119,11 @@ typedef enum {
 	FAULT_CODE_HIGH_OFFSET_CURRENT_SENSOR_1,
 	FAULT_CODE_HIGH_OFFSET_CURRENT_SENSOR_2,
 	FAULT_CODE_HIGH_OFFSET_CURRENT_SENSOR_3,
-	FAULT_CODE_UNBALANCED_CURRENTS
+	FAULT_CODE_UNBALANCED_CURRENTS,
+	FAULT_CODE_BRK,
+	FAULT_CODE_RESOLVER_LOT,
+	FAULT_CODE_RESOLVER_DOS,
+	FAULT_CODE_RESOLVER_LOS
 } mc_fault_code;
 
 typedef enum {
@@ -181,6 +199,12 @@ typedef enum {
 	BATTERY_TYPE_LIIRON_2_6__3_6,
 	BATTERY_TYPE_LEAD_ACID
 } BATTERY_TYPE;
+
+typedef enum {
+	HFI_SAMPLES_8 = 0,
+	HFI_SAMPLES_16,
+	HFI_SAMPLES_32
+} foc_hfi_samples;
 
 typedef struct {
 	// Switching and drive
@@ -269,6 +293,15 @@ typedef struct {
 	bool foc_temp_comp;
 	float foc_temp_comp_base_temp;
 	float foc_current_filter_const;
+	mc_foc_cc_decoupling_mode foc_cc_decoupling;
+	mc_foc_observer_type foc_observer_type;
+	float foc_hfi_voltage_start;
+	float foc_hfi_voltage_run;
+	float foc_hfi_voltage_max;
+	float foc_sl_erpm_hfi;
+	uint16_t foc_hfi_start_samples;
+	float foc_hfi_obs_ovr_sec;
+	foc_hfi_samples foc_hfi_samples;
 	// GPDrive
 	int gpd_buffer_notify_left;
 	int gpd_buffer_interpol;
@@ -574,6 +607,12 @@ typedef struct {
 	float gyro_offset_comp_clamp;
 } imu_config;
 
+typedef enum {
+	CAN_MODE_VESC = 0,
+	CAN_MODE_UAVCAN,
+	CAN_MODE_COMM_BRIDGE
+} CAN_MODE;
+
 typedef struct {
 	// Settings
 	uint8_t controller_id;
@@ -586,8 +625,8 @@ typedef struct {
 	bool permanent_uart_enabled;
 	SHUTDOWN_MODE shutdown_mode;
 
-	// UAVCAN
-	bool uavcan_enable;
+	// CAN modes
+	CAN_MODE can_mode;
 	uint8_t uavcan_esc_index;
 
 	// Application to use
@@ -701,7 +740,8 @@ typedef enum {
 	COMM_WRITE_NEW_APP_DATA_LZO,
 	COMM_WRITE_NEW_APP_DATA_ALL_CAN_LZO,
 	COMM_BM_WRITE_FLASH_LZO,
-	COMM_SET_CURRENT_REL
+	COMM_SET_CURRENT_REL,
+	COMM_CAN_FWD_FRAME
 } COMM_PACKET_ID;
 
 // CAN commands
@@ -733,7 +773,8 @@ typedef enum {
 	CAN_PACKET_CONF_STORE_CURRENT_LIMITS_IN,
 	CAN_PACKET_CONF_FOC_ERPMS,
 	CAN_PACKET_CONF_STORE_FOC_ERPMS,
-	CAN_PACKET_STATUS_5
+	CAN_PACKET_STATUS_5,
+	CAN_PACKET_POLL_TS5700N8501_STATUS
 } CAN_PACKET_ID;
 
 // Logged fault data
