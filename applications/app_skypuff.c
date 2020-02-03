@@ -2228,11 +2228,11 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 				break;
 
 			// Use braking_length from received config
-			if (*abs_tac > set_config.braking_length + set_config.braking_extension_length)
+			/*if (*abs_tac > set_config.braking_length + set_config.braking_extension_length)
 			{
 				commands_printf("%s: -- Can't set configuration -- Position is out of safe braking zone", state_str(state));
 				break;
-			}
+			}*/
 
 			// mc_configuration changed?
 			if (set_drive.motor_poles != mc_conf->si_motor_poles ||
