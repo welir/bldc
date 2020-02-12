@@ -41,6 +41,8 @@
 
 // Uncomment to enable Smooth Motor Control debugging terminal commands
 //#define DEBUG_SMOOTH_MOTOR
+#define DEBUG_ANTISEX
+
 #include "app_skypuff.h"
 
 /*
@@ -74,7 +76,7 @@
 const int short_print_delay = 500; // 0.5s, measured in control loop counts
 const int long_print_delay = 3000;
 const int temps_print_delay = 15000;
-const int smooth_max_step_delay = 50;
+const int smooth_max_step_delay = 100;
 
 const char *limits_wrn = "-- CONFIGURATION IS OUT OF LIMITS --";
 
@@ -84,6 +86,7 @@ static THD_WORKING_AREA(my_thread_wa, 2048);
 
 // Private functions
 static void terminal_set_zero(int argc, const char **argv);
+static void terminal_move_zero(int argc, const char **argv);
 static void terminal_print_conf(int argc, const char **argv);
 static void terminal_get_conf(int argc, const char **argv); // Send serialized conf with COMM_CUSTOM_APP_DATA
 static void terminal_set_example_conf(int argc, const char **argv);
@@ -118,6 +121,27 @@ static int alive_until;					 // In good communication we trust until (i < alive_
 static int state_start_time;			 // Count the duration of state
 static float terminal_pull_kg;			 // Pulling force to set
 static volatile int alive_inc;			 // Communication timeout increment from terminal thread
+
+// Prevent long time oscilations
+// Long rope in the air works like a big spring
+// and cause long time oscilations together with paraglider
+#define antisex_measure_delay 5 // Measured in loop steps
+#define antisex_erpm_filtering_steps 10
+const float antisex_erpm_filtering_k = (float)1 / antisex_erpm_filtering_steps;
+const float antisex_acceleration_time_k = (float)1000.0 / (float)(antisex_erpm_filtering_steps * antisex_measure_delay);
+const float antisex_reduce_integral = 2500;
+const float antisex_reduce_k = 0.9;
+
+static float antisex_k; // Force coefficient to prevent oscilations
+static float antisex_erpm_filtered;
+static float antisex_erpm_prev_filtered;
+static float antisex_acceleration_prev;
+static float antisex_acceleration_integral;
+static int antisex_erpm_filtering_step;
+#ifdef DEBUG_ANTISEX
+const int antisex_max_sent_zeroes = 30;
+static int antisex_sent_zeroes;
+#endif
 
 static volatile skypuff_state state; // Readable from commands threads too
 static skypuff_config config;
@@ -330,7 +354,7 @@ inline static void smooth_motor_instant_current(void)
 
 	current_motor_state = target_motor_state;
 
-	mc_interface_set_current(target_motor_state.param.current);
+	mc_interface_set_current(target_motor_state.param.current * antisex_k);
 
 	next_smooth_motor_adjustment = INT_MAX;
 	prev_smooth_motor_adjustment = loop_step;
@@ -533,7 +557,7 @@ inline static void smooth_motor_adjustment(const int cur_tac, const int abs_tac)
 				return;
 			}
 
-			mc_interface_set_current(step_current);
+			mc_interface_set_current(step_current * antisex_k);
 			current_motor_state.param.current = step_current;
 
 			prev_smooth_motor_adjustment = loop_step;
@@ -1299,6 +1323,10 @@ void app_custom_start(void)
 		"Move SkyPUFF zero point to this position",
 		"", terminal_set_zero);
 	terminal_register_command_callback(
+		"move_zero",
+		"Dangerous! Move SkyPUFF zero position to specified meters delta",
+		"[meters]", terminal_move_zero);
+	terminal_register_command_callback(
 		"skypuff",
 		"Print configuration",
 		"", terminal_print_conf);
@@ -1339,6 +1367,7 @@ void app_custom_stop(void)
 {
 	commands_set_app_data_handler(NULL);
 	terminal_unregister_callback(terminal_set_zero);
+	terminal_unregister_callback(terminal_move_zero);
 	terminal_unregister_callback(terminal_print_conf);
 	terminal_unregister_callback(terminal_get_conf);
 	terminal_unregister_callback(terminal_set_example_conf);
@@ -2308,6 +2337,121 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 		terminal_command = DO_NOTHING;
 }
 
+static void antisex_init(void)
+{
+	antisex_erpm_filtered = mc_interface_get_rpm();
+	antisex_erpm_prev_filtered = antisex_erpm_filtered;
+	antisex_erpm_filtering_step = 0;
+	antisex_acceleration_integral = 0;
+	antisex_acceleration_prev = 0;
+	antisex_k = 1;
+
+#ifdef DEBUG_ANTISEX
+	antisex_sent_zeroes = 0;
+
+	commands_init_plot("Milliseconds", "Speed");
+	commands_plot_add_graph("Speed filtered");
+	commands_plot_add_graph("Acceleration");
+	commands_plot_add_graph("Acceleration integral");
+	commands_plot_add_graph("Position");
+	commands_plot_add_graph("Antisex K * 5000");
+#endif
+}
+
+static inline void antisex_send_graph(const int cur_tac, const float acceleration)
+{
+	commands_plot_set_graph(0);
+	commands_send_plot_points(loop_step, antisex_erpm_filtered);
+
+	commands_plot_set_graph(1);
+	commands_send_plot_points(loop_step, acceleration);
+
+	commands_plot_set_graph(2);
+	commands_send_plot_points(loop_step, antisex_acceleration_integral);
+
+	commands_plot_set_graph(3);
+	commands_send_plot_points(loop_step, cur_tac);
+
+	commands_plot_set_graph(4);
+	commands_send_plot_points(loop_step, antisex_k * 5000);
+}
+
+static inline void antisex_adjustment(void)
+{
+	if (current_motor_state.mode == MOTOR_CURRENT)
+		mc_interface_set_current(current_motor_state.param.current * antisex_k);
+}
+
+static inline void antisex_step(const int cur_tac)
+{
+	UTILS_LP_FAST(antisex_erpm_filtered, mc_interface_get_rpm(), antisex_erpm_filtering_k);
+
+	antisex_erpm_filtering_step++;
+
+	if (antisex_erpm_filtering_step < antisex_erpm_filtering_steps)
+		return;
+
+	antisex_erpm_filtering_step = 0;
+
+	float acceleration = (antisex_erpm_filtered - antisex_erpm_prev_filtered) * antisex_acceleration_time_k;
+	antisex_erpm_prev_filtered = antisex_erpm_filtered;
+
+	// Acceleration zero cross?
+	bool integral_cross = false;
+	if ((acceleration > -0.1 && antisex_acceleration_prev < 0) || (acceleration < 0.1 && antisex_acceleration_prev > 0))
+	{
+		antisex_acceleration_integral = 0;
+		integral_cross = true;
+	}
+
+	antisex_acceleration_prev = acceleration;
+
+	antisex_acceleration_integral += acceleration / antisex_erpm_filtering_steps;
+
+	// If energy (integral) in direction to zero is hight enough - reduce force. Until integral reseted
+	if ((cur_tac > 0 && antisex_acceleration_integral < -antisex_reduce_integral) ||
+		(cur_tac < 0 && antisex_acceleration_integral > antisex_reduce_integral))
+	{
+		if (antisex_k != antisex_reduce_k)
+		{
+			antisex_k = antisex_reduce_k;
+#ifdef DEBUG_ANTISEX
+			commands_printf("%s: speed %.1fms (%0.f ERPM) -- Antisex force reduced %.2f",
+							state_str(state),
+							(double)erpm_to_ms(antisex_erpm_filtered), (double)antisex_erpm_filtered,
+							antisex_k);
+#endif
+			antisex_adjustment();
+		}
+	}
+	else if (integral_cross)
+	{
+		if (antisex_k != 1)
+		{
+			antisex_k = 1;
+#ifdef DEBUG_ANTISEX
+			commands_printf("%s: speed %.1fms (%0.f ERPM) -- Antisex removed",
+							state_str(state),
+							(double)erpm_to_ms(antisex_erpm_filtered), (double)antisex_erpm_filtered);
+#endif
+			antisex_adjustment();
+		}
+	}
+
+#ifdef DEBUG_ANTISEX
+	if (acceleration > 0.001)
+	{
+		antisex_send_graph(cur_tac, acceleration);
+		antisex_sent_zeroes = 0;
+	}
+	else if (antisex_sent_zeroes < 30)
+	{
+		antisex_send_graph(cur_tac, acceleration);
+		antisex_sent_zeroes++;
+	}
+#endif
+}
+
 static THD_FUNCTION(my_thread, arg)
 {
 	(void)arg;
@@ -2315,6 +2459,8 @@ static THD_FUNCTION(my_thread, arg)
 	chRegSetThreadName("App SkyPUFF");
 
 	is_running = true;
+
+	antisex_init();
 
 	// Main control loop
 	for (loop_step = 0;; loop_step++)
@@ -2350,6 +2496,10 @@ static THD_FUNCTION(my_thread, arg)
 		if (loop_step >= next_smooth_motor_adjustment)
 			smooth_motor_adjustment(cur_tac, abs_tac);
 
+		// Calculate anti oscilations adjustments
+		if (!(loop_step % antisex_measure_delay))
+			antisex_step(cur_tac);
+
 		print_stats_periodically();
 
 		chThdSleepMilliseconds(1);
@@ -2358,8 +2508,8 @@ static THD_FUNCTION(my_thread, arg)
 
 // Terminal command to change tachometer value
 // NOT SAFE
-/*
-static void terminal_move_tac(int argc, const char **argv)
+// Debug usage only!
+static void terminal_move_zero(int argc, const char **argv)
 {
 	if (argc == 2)
 	{
@@ -2376,7 +2526,8 @@ static void terminal_move_tac(int argc, const char **argv)
 
 		int new_tac = cur_tac + steps;
 
-		commands_printf("move_tac: moving zero %.2fm (%d steps) %s, cur pos: %.2fm (%d steps), new pos: %.2fm (%d steps)",
+		commands_printf("%s: -- moving zero %.2fm (%d steps) %s, cur pos: %.2fm (%d steps), new pos: %.2fm (%d steps)",
+						state_str(state),
 						(double)d, steps, d < 0 ? "backward" : "forward",
 						(double)tac_steps_to_meters(cur_tac), cur_tac,
 						(double)tac_steps_to_meters(new_tac), new_tac);
@@ -2385,10 +2536,9 @@ static void terminal_move_tac(int argc, const char **argv)
 	}
 	else
 	{
-		commands_printf("This command requires one argument: 'move_tac -5.2' will move zero 5.2 meters backward");
+		commands_printf("This command requires one argument: 'move_zero -5.2' will move zero 5.2 meters backward");
 	}
 }
-*/
 
 static void terminal_set_zero(int argc, const char **argv)
 {
