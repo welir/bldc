@@ -41,7 +41,7 @@
 
 // Uncomment to enable Smooth Motor Control debugging terminal commands
 //#define DEBUG_SMOOTH_MOTOR
-#define DEBUG_ANTISEX
+//#define DEBUG_ANTISEX
 
 #include "app_skypuff.h"
 
@@ -241,6 +241,10 @@ static const skypuff_config min_config = {
 	.manual_slow_max_current = 1,
 	.manual_slow_speed_up_current = 1,
 	.manual_slow_erpm = 100,
+	.antisex_starting_integral = 1000,
+	.antisex_reduce_amps = 1,
+	.antisex_reduce_steps = 0,
+	.antisex_reduce_amps_per_step = 0,
 };
 
 static const skypuff_config max_config = {
@@ -269,6 +273,10 @@ static const skypuff_config max_config = {
 	.manual_slow_max_current = 50,
 	.manual_slow_speed_up_current = 50,
 	.manual_slow_erpm = 40000,
+	.antisex_starting_integral = 1000000, // Set high to disable antisex
+	.antisex_reduce_amps = 40,			  // Too much can cause strong braking with current spikes
+	.antisex_reduce_steps = 10,
+	.antisex_reduce_amps_per_step = 10, // Be carefull with high amps per step and many steps
 };
 
 // Convert units functions
@@ -780,7 +788,15 @@ static bool is_config_out_of_limits(const skypuff_config *conf)
 		   is_int_out_of_limits("pre_pull_timeout", "milliseconds", conf->pre_pull_timeout,
 								min_config.pre_pull_timeout, max_config.pre_pull_timeout) ||
 		   is_int_out_of_limits("takeoff_period", "milliseconds", conf->takeoff_period,
-								min_config.takeoff_period, max_config.takeoff_period);
+								min_config.takeoff_period, max_config.takeoff_period) ||
+		   is_float_out_of_limits("antisex_starting_integral", "ERPM/sec integral", conf->antisex_starting_integral,
+								  min_config.antisex_starting_integral, max_config.antisex_starting_integral) ||
+		   is_pull_out_of_limits("antisex_reduce_amps", conf->antisex_reduce_amps,
+								 min_config.antisex_reduce_amps, max_config.antisex_reduce_amps) ||
+		   is_pull_out_of_limits("antisex_reduce_amps_per_step", conf->antisex_reduce_amps_per_step,
+								 min_config.antisex_reduce_amps_per_step, max_config.antisex_reduce_amps_per_step) ||
+		   is_int_out_of_limits("antisex_reduce_steps", "steps", conf->antisex_reduce_steps,
+								min_config.antisex_reduce_steps, max_config.antisex_reduce_steps);
 }
 
 // EEPROM functions
@@ -1083,11 +1099,16 @@ inline static void serialize_config(uint8_t *buffer, int32_t *ind)
 	buffer_append_float32_auto(buffer, config.manual_slow_max_current, ind);
 	buffer_append_float32_auto(buffer, config.manual_slow_speed_up_current, ind);
 	buffer_append_float32_auto(buffer, config.manual_slow_erpm, ind);
+
+	buffer_append_float32_auto(buffer, config.antisex_starting_integral, ind);
+	buffer_append_float32_auto(buffer, config.antisex_reduce_amps, ind);
+	buffer_append_int32(buffer, config.antisex_reduce_steps, ind);
+	buffer_append_float32_auto(buffer, config.antisex_reduce_amps_per_step, ind);
 }
 
 inline static bool deserialize_config(unsigned char *data, unsigned int len, skypuff_config *to, int32_t *ind)
 {
-	const int32_t serialized_settings_v1_length = 4 * 25 - 2;
+	const int32_t serialized_settings_v1_length = 4 * 29 - 2;
 
 	int available_bytes = len - *ind;
 	if (available_bytes < serialized_settings_v1_length)
@@ -1126,6 +1147,11 @@ inline static bool deserialize_config(unsigned char *data, unsigned int len, sky
 	to->manual_slow_max_current = buffer_get_float32_auto(data, ind);
 	to->manual_slow_speed_up_current = buffer_get_float32_auto(data, ind);
 	to->manual_slow_erpm = buffer_get_float32_auto(data, ind);
+
+	to->antisex_starting_integral = buffer_get_float32_auto(data, ind);
+	to->antisex_reduce_amps = buffer_get_float32_auto(data, ind);
+	to->antisex_reduce_steps = buffer_get_int32(data, ind);
+	to->antisex_reduce_amps_per_step = buffer_get_float32_auto(data, ind);
 
 	return true;
 }
@@ -1279,6 +1305,30 @@ void custom_app_data_handler(unsigned char *data, unsigned int len)
 	}
 }
 
+static void antisex_init(void)
+{
+	antisex_erpm_filtered = mc_interface_get_rpm();
+	antisex_erpm_prev_filtered = antisex_erpm_filtered;
+	antisex_erpm_filtering_step = 0;
+	antisex_acceleration_integral = 0;
+	antisex_acceleration_prev = 0;
+	antisex_amps = 0;
+	antisex_deceleration_sign = 0;
+	antisex_reduce_step = 0;
+	antisex_measure_step = 0;
+
+#ifdef DEBUG_ANTISEX
+	antisex_sent_zeroes = 0;
+
+	commands_init_plot("Milliseconds", "Speed");
+	commands_plot_add_graph("Speed filtered");
+	commands_plot_add_graph("Acceleration");
+	//commands_plot_add_graph("Acceleration integral");
+	commands_plot_add_graph("Position");
+	commands_plot_add_graph("Antisex Amps");
+#endif
+}
+
 // Called when the custom application is started. Start our
 // threads here and set up callbacks.
 void app_custom_start(void)
@@ -1317,6 +1367,8 @@ void app_custom_start(void)
 
 	// Update smooth speed for current pull
 	smooth_calculate_new_speed();
+
+	antisex_init();
 
 	// Check system drive settings and our config for limits
 	set_drive.motor_poles = mc_conf->si_motor_poles;
@@ -2347,30 +2399,6 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 		terminal_command = DO_NOTHING;
 }
 
-static void antisex_init(void)
-{
-	antisex_erpm_filtered = mc_interface_get_rpm();
-	antisex_erpm_prev_filtered = antisex_erpm_filtered;
-	antisex_erpm_filtering_step = 0;
-	antisex_acceleration_integral = 0;
-	antisex_acceleration_prev = 0;
-	antisex_amps = 0;
-	antisex_deceleration_sign = 0;
-	antisex_reduce_step = 0;
-	antisex_measure_step = 0;
-
-#ifdef DEBUG_ANTISEX
-	antisex_sent_zeroes = 0;
-
-	commands_init_plot("Milliseconds", "Speed");
-	commands_plot_add_graph("Speed filtered");
-	commands_plot_add_graph("Acceleration");
-	//commands_plot_add_graph("Acceleration integral");
-	commands_plot_add_graph("Position");
-	commands_plot_add_graph("Antisex Amps");
-#endif
-}
-
 // This have to be refactored to use with Skypuff all
 // For now I use it for debugging from Vesc Tool only
 #ifdef DEBUG_ANTISEX
@@ -2519,8 +2547,6 @@ static THD_FUNCTION(my_thread, arg)
 	chRegSetThreadName("App SkyPUFF");
 
 	is_running = true;
-
-	antisex_init();
 
 	// Main control loop
 	for (loop_step = 0;; loop_step++)
