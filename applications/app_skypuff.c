@@ -127,17 +127,26 @@ static volatile int alive_inc;			 // Communication timeout increment from termin
 // and cause long time oscilations together with paraglider
 #define antisex_measure_delay 5 // Measured in loop steps
 #define antisex_erpm_filtering_steps 10
-const float antisex_erpm_filtering_k = (float)1 / antisex_erpm_filtering_steps;
+const float antisex_erpm_filtering_k = 0.1;
 const float antisex_acceleration_time_k = (float)1000.0 / (float)(antisex_erpm_filtering_steps * antisex_measure_delay);
-const float antisex_reduce_integral = 2500;
-const float antisex_reduce_k = 0.9;
 
-static float antisex_k; // Force coefficient to prevent oscilations
+const float antisex_starting_integral = 2500;
+const float antisex_reduce_amps = 3;
+const float antisex_reduce_amps_per_step = 3;
+const int antisex_reduce_steps = 5;
+const int antisex_back_steps = 2;
+
+static float antisex_amps; // Force additive value to prevent oscilations
 static float antisex_erpm_filtered;
 static float antisex_erpm_prev_filtered;
 static float antisex_acceleration_prev;
 static float antisex_acceleration_integral;
 static int antisex_erpm_filtering_step;
+static int antisex_reduce_step;
+static int antisex_back_step;
+
+static float antisex_deceleration_sign;
+static float antisex_acceleration_before_reduce;
 #ifdef DEBUG_ANTISEX
 const int antisex_max_sent_zeroes = 30;
 static int antisex_sent_zeroes;
@@ -354,7 +363,7 @@ inline static void smooth_motor_instant_current(void)
 
 	current_motor_state = target_motor_state;
 
-	mc_interface_set_current(target_motor_state.param.current * antisex_k);
+	mc_interface_set_current(target_motor_state.param.current + antisex_amps);
 
 	next_smooth_motor_adjustment = INT_MAX;
 	prev_smooth_motor_adjustment = loop_step;
@@ -557,7 +566,7 @@ inline static void smooth_motor_adjustment(const int cur_tac, const int abs_tac)
 				return;
 			}
 
-			mc_interface_set_current(step_current * antisex_k);
+			mc_interface_set_current(step_current + antisex_amps);
 			current_motor_state.param.current = step_current;
 
 			prev_smooth_motor_adjustment = loop_step;
@@ -2344,7 +2353,10 @@ static void antisex_init(void)
 	antisex_erpm_filtering_step = 0;
 	antisex_acceleration_integral = 0;
 	antisex_acceleration_prev = 0;
-	antisex_k = 1;
+	antisex_amps = 0;
+	antisex_deceleration_sign = 0;
+	antisex_reduce_step = 0;
+	antisex_back_step = 0;
 
 #ifdef DEBUG_ANTISEX
 	antisex_sent_zeroes = 0;
@@ -2370,16 +2382,25 @@ static inline void antisex_send_graph(const int cur_tac, const float acceleratio
 	commands_send_plot_points(loop_step, antisex_acceleration_integral);
 
 	commands_plot_set_graph(3);
-	commands_send_plot_points(loop_step, cur_tac);
+
+	// Adapt cur_tac to graph
+	int graph_pos = cur_tac * 30;
+	if (graph_pos < -20000)
+		graph_pos += 40000;
+	else if (graph_pos > 20000)
+		graph_pos -= 40000;
+
+	commands_send_plot_points(loop_step, graph_pos);
 
 	commands_plot_set_graph(4);
-	commands_send_plot_points(loop_step, antisex_k * 5000);
+	commands_send_plot_points(loop_step, current_motor_state.mode == MOTOR_CURRENT ? (current_motor_state.param.current + antisex_amps) * 200 : 0);
 }
 
 static inline void antisex_adjustment(void)
 {
+	// Change motor current only if we are in pull states
 	if (current_motor_state.mode == MOTOR_CURRENT)
-		mc_interface_set_current(current_motor_state.param.current * antisex_k);
+		mc_interface_set_current(current_motor_state.param.current + antisex_amps);
 }
 
 static inline void antisex_step(const int cur_tac)
@@ -2394,46 +2415,72 @@ static inline void antisex_step(const int cur_tac)
 	antisex_erpm_filtering_step = 0;
 
 	float acceleration = (antisex_erpm_filtered - antisex_erpm_prev_filtered) * antisex_acceleration_time_k;
+
 	antisex_erpm_prev_filtered = antisex_erpm_filtered;
 
-	// Acceleration zero cross?
-	bool integral_cross = false;
+	// Acceleration crossing near zero?
 	if ((acceleration > -0.1 && antisex_acceleration_prev < 0) || (acceleration < 0.1 && antisex_acceleration_prev > 0))
 	{
+		// Calculate if it's time to start decceleration sequence?
+		if (cur_tac <= 0)
+		{
+			if (antisex_acceleration_integral > antisex_starting_integral)
+			{
+				antisex_deceleration_sign = -1;
+				antisex_acceleration_before_reduce = acceleration;
+				antisex_reduce_step = 0;
+				antisex_back_step = antisex_back_steps; // Apply on first step
+			}
+		}
+		else // cur_tac is above zero
+		{
+			if (antisex_acceleration_integral < -antisex_starting_integral)
+			{
+				antisex_deceleration_sign = 1;
+				antisex_acceleration_before_reduce = acceleration;
+				antisex_reduce_step = 0;
+				antisex_back_step = antisex_back_steps; // Apply on first step
+			}
+		}
+
 		antisex_acceleration_integral = 0;
-		integral_cross = true;
 	}
 
 	antisex_acceleration_prev = acceleration;
 
 	antisex_acceleration_integral += acceleration / antisex_erpm_filtering_steps;
 
-	// If energy (integral) in direction to zero is hight enough - reduce force. Until integral reseted
-	if ((cur_tac > 0 && antisex_acceleration_integral < -antisex_reduce_integral) ||
-		(cur_tac < 0 && antisex_acceleration_integral > antisex_reduce_integral))
+	// Previous loop was deceleartion?
+	if (antisex_amps)
 	{
-		if (antisex_k != antisex_reduce_k)
-		{
-			antisex_k = antisex_reduce_k;
-#ifdef DEBUG_ANTISEX
-			commands_printf("%s: speed %.1fms (%0.f ERPM) -- Antisex force reduced %.2f",
-							state_str(state),
-							(double)erpm_to_ms(antisex_erpm_filtered), (double)antisex_erpm_filtered,
-							antisex_k);
-#endif
-			antisex_adjustment();
-		}
+		// Just release and wait next loop to measure
+		antisex_amps = 0;
+		antisex_adjustment();
+		antisex_back_step = 0;
 	}
-	else if (integral_cross)
+	else if (antisex_deceleration_sign)
 	{
-		if (antisex_k != 1)
+		antisex_back_step++;
+		if (antisex_back_step >= antisex_back_steps)
 		{
-			antisex_k = 1;
-#ifdef DEBUG_ANTISEX
-			commands_printf("%s: speed %.1fms (%0.f ERPM) -- Antisex removed",
-							state_str(state),
-							(double)erpm_to_ms(antisex_erpm_filtered), (double)antisex_erpm_filtered);
-#endif
+			// Check if time to stop?
+			if (antisex_deceleration_sign == -1)
+			{
+				if (acceleration > antisex_acceleration_before_reduce)
+					antisex_deceleration_sign = 0;
+			}
+			else if (antisex_deceleration_sign == 1)
+			{
+				if (acceleration < antisex_acceleration_before_reduce)
+					antisex_deceleration_sign = 0;
+			}
+			antisex_acceleration_before_reduce = acceleration;
+
+			antisex_amps = antisex_deceleration_sign * (antisex_reduce_amps + antisex_reduce_step * antisex_reduce_amps_per_step);
+
+			if (antisex_reduce_step < antisex_reduce_steps)
+				antisex_reduce_step++;
+
 			antisex_adjustment();
 		}
 	}
