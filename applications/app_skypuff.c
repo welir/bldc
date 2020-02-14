@@ -125,16 +125,11 @@ static volatile int alive_inc;			 // Communication timeout increment from termin
 // Prevent long time oscilations
 // Long rope in the air works like a big spring
 // and cause long time oscilations together with paraglider
-#define antisex_measure_delay 5 // Measured in loop steps
+#define antisex_measure_delay 3 // Measured in loop steps
 #define antisex_erpm_filtering_steps 10
 const float antisex_erpm_filtering_k = 0.1;
 const float antisex_acceleration_time_k = (float)1000.0 / (float)(antisex_erpm_filtering_steps * antisex_measure_delay);
-
-const float antisex_starting_integral = 2500;
-const float antisex_reduce_amps = 3;
-const float antisex_reduce_amps_per_step = 3;
-const int antisex_reduce_steps = 5;
-const int antisex_back_steps = 2;
+const int antisex_measure_steps = 2; // I did some tests, works better on 2 steps then 1 step
 
 static float antisex_amps; // Force additive value to prevent oscilations
 static float antisex_erpm_filtered;
@@ -143,7 +138,7 @@ static float antisex_acceleration_prev;
 static float antisex_acceleration_integral;
 static int antisex_erpm_filtering_step;
 static int antisex_reduce_step;
-static int antisex_back_step;
+static int antisex_measure_step;
 
 static float antisex_deceleration_sign;
 static float antisex_acceleration_before_reduce;
@@ -1027,6 +1022,12 @@ static void set_example_conf(skypuff_config *cfg)
 	cfg->takeoff_trigger_length = meters_to_tac_steps(0.1);
 	cfg->pre_pull_timeout = 2 * 1000;
 	cfg->takeoff_period = 5 * 1000;
+
+	// Antisex
+	cfg->antisex_starting_integral = 5000;
+	cfg->antisex_reduce_amps = 10;
+	cfg->antisex_reduce_steps = 2;
+	cfg->antisex_reduce_amps_per_step = 3;
 }
 
 // Serialization/deserialization functions
@@ -2356,7 +2357,7 @@ static void antisex_init(void)
 	antisex_amps = 0;
 	antisex_deceleration_sign = 0;
 	antisex_reduce_step = 0;
-	antisex_back_step = 0;
+	antisex_measure_step = 0;
 
 #ifdef DEBUG_ANTISEX
 	antisex_sent_zeroes = 0;
@@ -2364,12 +2365,15 @@ static void antisex_init(void)
 	commands_init_plot("Milliseconds", "Speed");
 	commands_plot_add_graph("Speed filtered");
 	commands_plot_add_graph("Acceleration");
-	commands_plot_add_graph("Acceleration integral");
+	//commands_plot_add_graph("Acceleration integral");
 	commands_plot_add_graph("Position");
-	commands_plot_add_graph("Antisex K * 5000");
+	commands_plot_add_graph("Antisex Amps");
 #endif
 }
 
+// This have to be refactored to use with Skypuff all
+// For now I use it for debugging from Vesc Tool only
+#ifdef DEBUG_ANTISEX
 static inline void antisex_send_graph(const int cur_tac, const float acceleration)
 {
 	commands_plot_set_graph(0);
@@ -2378,10 +2382,10 @@ static inline void antisex_send_graph(const int cur_tac, const float acceleratio
 	commands_plot_set_graph(1);
 	commands_send_plot_points(loop_step, acceleration);
 
-	commands_plot_set_graph(2);
-	commands_send_plot_points(loop_step, antisex_acceleration_integral);
+	//commands_plot_set_graph(2);
+	//commands_send_plot_points(loop_step, antisex_acceleration_integral);
 
-	commands_plot_set_graph(3);
+	commands_plot_set_graph(2);
 
 	// Adapt cur_tac to graph
 	int graph_pos = cur_tac * 30;
@@ -2392,9 +2396,10 @@ static inline void antisex_send_graph(const int cur_tac, const float acceleratio
 
 	commands_send_plot_points(loop_step, graph_pos);
 
-	commands_plot_set_graph(4);
+	commands_plot_set_graph(3);
 	commands_send_plot_points(loop_step, current_motor_state.mode == MOTOR_CURRENT ? (current_motor_state.param.current + antisex_amps) * 200 : 0);
 }
+#endif
 
 static inline void antisex_adjustment(void)
 {
@@ -2424,22 +2429,22 @@ static inline void antisex_step(const int cur_tac)
 		// Calculate if it's time to start decceleration sequence?
 		if (cur_tac <= 0)
 		{
-			if (antisex_acceleration_integral > antisex_starting_integral)
+			if (antisex_acceleration_integral > config.antisex_starting_integral)
 			{
 				antisex_deceleration_sign = -1;
 				antisex_acceleration_before_reduce = acceleration;
 				antisex_reduce_step = 0;
-				antisex_back_step = antisex_back_steps; // Apply on first step
+				antisex_measure_step = antisex_measure_steps; // Apply on first step
 			}
 		}
 		else // cur_tac is above zero
 		{
-			if (antisex_acceleration_integral < -antisex_starting_integral)
+			if (antisex_acceleration_integral < -config.antisex_starting_integral)
 			{
 				antisex_deceleration_sign = 1;
 				antisex_acceleration_before_reduce = acceleration;
 				antisex_reduce_step = 0;
-				antisex_back_step = antisex_back_steps; // Apply on first step
+				antisex_measure_step = antisex_measure_steps; // Apply on first step
 			}
 		}
 
@@ -2456,29 +2461,37 @@ static inline void antisex_step(const int cur_tac)
 		// Just release and wait next loop to measure
 		antisex_amps = 0;
 		antisex_adjustment();
-		antisex_back_step = 0;
+		antisex_measure_step = 0;
 	}
 	else if (antisex_deceleration_sign)
 	{
-		antisex_back_step++;
-		if (antisex_back_step >= antisex_back_steps)
+		antisex_measure_step++;
+		if (antisex_measure_step >= antisex_measure_steps)
 		{
 			// Check if time to stop?
+			bool final_step = false;
 			if (antisex_deceleration_sign == -1)
 			{
 				if (acceleration > antisex_acceleration_before_reduce)
-					antisex_deceleration_sign = 0;
+					final_step = true; //antisex_deceleration_sign = 0;
 			}
 			else if (antisex_deceleration_sign == 1)
 			{
 				if (acceleration < antisex_acceleration_before_reduce)
-					antisex_deceleration_sign = 0;
+					final_step = true; //antisex_deceleration_sign = 0;
 			}
 			antisex_acceleration_before_reduce = acceleration;
 
-			antisex_amps = antisex_deceleration_sign * (antisex_reduce_amps + antisex_reduce_step * antisex_reduce_amps_per_step);
+			// Revert sign if final step
+			if (final_step)
+				antisex_deceleration_sign *= -1;
 
-			if (antisex_reduce_step < antisex_reduce_steps)
+			antisex_amps = antisex_deceleration_sign * (config.antisex_reduce_amps + antisex_reduce_step * config.antisex_reduce_amps_per_step);
+
+			if (final_step)
+				antisex_deceleration_sign = 0;
+
+			if (antisex_reduce_step < config.antisex_reduce_steps)
 				antisex_reduce_step++;
 
 			antisex_adjustment();
@@ -2486,7 +2499,7 @@ static inline void antisex_step(const int cur_tac)
 	}
 
 #ifdef DEBUG_ANTISEX
-	if (acceleration > 0.001)
+	if (acceleration > 0.1 || acceleration < -0.1)
 	{
 		antisex_send_graph(cur_tac, acceleration);
 		antisex_sent_zeroes = 0;
