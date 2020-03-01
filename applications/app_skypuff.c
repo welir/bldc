@@ -71,11 +71,12 @@
 		BRAKING: pos 0.00m (0 steps), speed: -0.0ms (-0 ERPM), braking 1.0Kg (7.0A)
 
 	On double '--' UI will show message dialog with first payload as title and second as text.
+
+	From 1 march 2020 Skypuff UI use binary protocol only. I tried to minimize packet sizes due to slow radio links.
 */
 
 const int short_print_delay = 500; // 0.5s, measured in control loop counts
 const int long_print_delay = 3000;
-const int temps_print_delay = 15000;
 const int smooth_max_step_delay = 100;
 
 const char *limits_wrn = "-- CONFIGURATION IS OUT OF LIMITS --";
@@ -108,13 +109,7 @@ static float prev_erpm;					 // Detect change in direction of rotation
 static int prev_print;					 // Loop counter value of the last state print
 static int prev_temps_print;			 // Loop counter value of the last temps print
 static int prev_printed_tac;			 // Do not print the same position
-static float prev_printed_fets_temp;	 // Do not print close temps
-static float prev_printed_motor_temp;	// Do not print close temps
-static float prev_printed_bat_temp;		 // Do not print close temps
-static float prev_printed_bat_v;		 // Do not print small changes
-static float prev_printed_wh_out;		 // Do not print small changes
-static float prev_printed_wh_in;		 // Do not print small changes
-static mc_fault_code prev_printed_fault; // Do not print the same fault many times
+static mc_fault_code prev_printed_fault; // Do not print (send) the same fault many times
 static float v_in_filtered;				 // Average for v_in
 static float erpm_filtered;				 // For speed up states
 static int alive_until;					 // In good communication we trust until (i < alive_until)
@@ -170,6 +165,8 @@ typedef enum
 	PRINT_CONF,
 	SET_CONF,
 	SEND_CONF,
+	SEND_POWER_STATS,
+	SEND_TEMP_STATS,
 #ifdef DEBUG_SMOOTH_MOTOR
 	SET_SMOOTH,
 #endif
@@ -1079,21 +1076,25 @@ inline static void serialize_config(uint8_t *buffer, int32_t *ind)
 	buffer_append_int32(buffer, config.rope_length, ind);
 	buffer_append_int32(buffer, config.braking_length, ind);
 	buffer_append_int32(buffer, config.braking_extension_length, ind);
+
 	buffer_append_int32(buffer, config.slowing_length, ind);
 	buffer_append_float32_auto(buffer, config.slow_erpm, ind);
 	buffer_append_int32(buffer, config.rewinding_trigger_length, ind);
 	buffer_append_int32(buffer, config.unwinding_trigger_length, ind);
 	buffer_append_float32_auto(buffer, config.pull_current, ind);
+
 	buffer_append_float32_auto(buffer, config.pre_pull_k, ind);
 	buffer_append_float32_auto(buffer, config.takeoff_pull_k, ind);
 	buffer_append_float32_auto(buffer, config.fast_pull_k, ind);
 	buffer_append_int32(buffer, config.takeoff_trigger_length, ind);
 	buffer_append_int32(buffer, config.pre_pull_timeout, ind);
+
 	buffer_append_int32(buffer, config.takeoff_period, ind);
 	buffer_append_float32_auto(buffer, config.brake_current, ind);
 	buffer_append_float32_auto(buffer, config.slowing_current, ind);
 	buffer_append_float32_auto(buffer, config.manual_brake_current, ind);
 	buffer_append_float32_auto(buffer, config.unwinding_current, ind);
+
 	buffer_append_float32_auto(buffer, config.rewinding_current, ind);
 	buffer_append_float32_auto(buffer, config.slow_max_current, ind);
 	buffer_append_float32_auto(buffer, config.manual_slow_max_current, ind);
@@ -1156,35 +1157,74 @@ inline static bool deserialize_config(unsigned char *data, unsigned int len, sky
 	return true;
 }
 
-inline static void get_stats(float *erpm, float *motor_amps, float *power)
+inline static void get_stats(float *erpm, float *motor_amps, float *battery_amps)
 {
 	*erpm = mc_interface_get_rpm();
 	*motor_amps = mc_interface_read_reset_avg_motor_current();
-	*power = v_in_filtered * mc_interface_read_reset_avg_input_current();
+	*battery_amps = mc_interface_read_reset_avg_input_current();
 }
 
 inline float get_battery_temp(void)
 {
-	return 0; // Not implemented yet
+	return -250; // Not implemented yet
 }
 
-inline static void serialize_alive(uint8_t *buffer, int32_t *ind, const int cur_tac)
+inline static void serialize_power_stats(uint8_t *buffer, int32_t *ind, const int cur_tac)
 {
 	float erpm;
 	float motor_amps;
-	float power;
-	get_stats(&erpm, &motor_amps, &power);
+	float battery_amps;
+	get_stats(&erpm, &motor_amps, &battery_amps);
 
-	buffer[(*ind)++] = current_motor_state.mode;
+	// Try to minimize packet size for slow channels
+	//buffer[(*ind)++] = current_motor_state.mode;
 	buffer_append_int32(buffer, cur_tac, ind);
-	buffer_append_float32(buffer, erpm, 1e1, ind);
-	buffer_append_float32(buffer, motor_amps, 1e1, ind);
-	buffer_append_float32(buffer, power, 1e1, ind);
+	buffer_append_int16(buffer, erpm / 4, ind); // About +-120k ERPM max
+	buffer_append_float16(buffer, motor_amps, 1e1, ind);
+	buffer_append_float16(buffer, battery_amps, 1e1, ind);
+}
+
+inline static void serialize_temp_stats(uint8_t *buffer, int32_t *ind)
+{
+	float fets_temp = mc_interface_temp_fet_filtered();
+	float motor_temp = mc_interface_temp_motor_filtered();
+	float bat_temp = get_battery_temp();
+	float wh_in = mc_interface_get_watt_hours(false);
+	float wh_out = mc_interface_get_watt_hours_charged(false);
+
+	buffer_append_float16(buffer, v_in_filtered, 1e1, ind);
+	buffer_append_float16(buffer, fets_temp, 1e1, ind);
+	buffer_append_float16(buffer, motor_temp, 1e1, ind);
+	buffer_append_float16(buffer, bat_temp, 1e1, ind);
+	buffer_append_float32(buffer, wh_in, 1e3, ind);
+	buffer_append_float32(buffer, wh_out, 1e3, ind);
+}
+
+inline static void serialize_scales(uint8_t *buffer, int32_t *ind)
+{
+	float max_force = fabs(mc_conf->lo_current_max) > fabs(mc_conf->lo_current_min) ? fabs(mc_conf->lo_current_max) : fabs(mc_conf->lo_current_min);
+	float max_discharge = mc_conf->lo_current_max < mc_conf->lo_in_current_max ? mc_conf->lo_current_max : mc_conf->lo_in_current_max;
+	// Min (discharge) current is negative
+	float max_charge = mc_conf->lo_current_min > mc_conf->lo_in_current_min ? mc_conf->lo_current_min : mc_conf->lo_in_current_min;
+
+	// currents
+	buffer_append_float16(buffer, max_force, 1e1, ind);
+	buffer_append_float16(buffer, max_discharge, 1e1, ind);
+	buffer_append_float16(buffer, max_charge, 1e1, ind);
+	// temps
+	buffer_append_float16(buffer, mc_conf->l_temp_fet_start, 1e1, ind);
+	buffer_append_float16(buffer, mc_conf->l_temp_motor_start, 1e1, ind);
+	// battery voltage
+	buffer_append_float32(buffer, fmax(mc_conf->l_min_vin, mc_conf->l_battery_cut_start), 1e2, ind);
+	buffer_append_float32(buffer, mc_conf->l_max_vin, 1e2, ind);
+
+	buffer[(*ind)++] = mc_conf->si_battery_cells;
+	buffer[(*ind)++] = mc_conf->si_battery_type;
 }
 
 inline static bool deserialize_alive(unsigned char *data, unsigned int len, int32_t *ind)
 {
-	const int32_t serialized_alive_length = 4;
+	const int32_t serialized_alive_length = 2;
 
 	int available_bytes = len - *ind;
 	if (available_bytes < serialized_alive_length)
@@ -1194,12 +1234,11 @@ inline static bool deserialize_alive(unsigned char *data, unsigned int len, int3
 		return false;
 	}
 
-	alive_inc = buffer_get_int32(data, ind);
+	alive_inc = buffer_get_uint16(data, ind);
 	return true;
 }
 
-// No sense to split initial state into many commands
-inline static void send_conf(const int cur_tac)
+inline static void send_conf(void)
 {
 	const int max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
 	uint8_t buffer[max_buf_size];
@@ -1209,26 +1248,9 @@ inline static void send_conf(const int cur_tac)
 	buffer[ind++] = state;
 	buffer[ind++] = mc_interface_get_fault();
 
-	// Let UI to set limits of the scales
-	buffer_append_float16(buffer, mc_conf->lo_current_max, 1e1, &ind);
-	buffer_append_float16(buffer, mc_conf->l_temp_fet_start, 1e1, &ind);
-	buffer_append_float16(buffer, mc_conf->l_temp_motor_start, 1e1, &ind);
-	buffer_append_float32(buffer, fmax(mc_conf->l_min_vin, mc_conf->l_battery_cut_start), 1e2, &ind);
-	buffer_append_float32(buffer, mc_conf->l_max_vin, 1e2, &ind);
-
-	buffer[ind++] = mc_conf->si_battery_cells;
-	buffer[ind++] = mc_conf->si_battery_type;
-
-	// And stats
-	buffer_append_float32(buffer, v_in_filtered, 1e2, &ind);
-	buffer_append_float16(buffer, mc_interface_temp_fet_filtered(), 1e1, &ind);
-	buffer_append_float16(buffer, mc_interface_temp_motor_filtered(), 1e1, &ind);
-	buffer_append_float16(buffer, get_battery_temp(), 1e1, &ind);
-	buffer_append_float32(buffer, mc_interface_get_watt_hours(false), 1e4, &ind);
-	buffer_append_float32(buffer, mc_interface_get_watt_hours_charged(false), 1e4, &ind);
+	serialize_scales(buffer, &ind);
 	serialize_drive(buffer, &ind);
 	serialize_config(buffer, &ind);
-	serialize_alive(buffer, &ind, cur_tac);
 
 	if (ind > max_buf_size)
 	{
@@ -1239,20 +1261,36 @@ inline static void send_conf(const int cur_tac)
 	commands_send_app_data(buffer, ind);
 }
 
-// Send motor mode, speed and current amps as reply to alive command
-inline static void send_alive(const int cur_tac)
+// Send fault to UI
+inline static void send_fault(const mc_fault_code f)
 {
 	const int max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
 	uint8_t buffer[max_buf_size];
 	int32_t ind = 0;
 
 	// Serialization magic: version, state, position, speed, drive settings, skypuff settings
-	buffer[ind++] = SK_COMM_ALIVE;
-	serialize_alive(buffer, &ind, cur_tac);
+	buffer[ind++] = SK_COMM_FAULT;
+	buffer[ind++] = f;
+
+	commands_send_app_data(buffer, ind);
+}
+
+// Send motor mode, speed and current amps as reply to alive command
+inline static void send_stats(const int cur_tac, bool add_temps)
+{
+	const int max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
+	uint8_t buffer[max_buf_size];
+	int32_t ind = 0;
+
+	buffer[ind++] = add_temps ? SK_COMM_ALIVE_TEMP_STATS : SK_COMM_ALIVE_POWER_STATS;
+
+	serialize_power_stats(buffer, &ind, cur_tac);
+	if (add_temps)
+		serialize_temp_stats(buffer, &ind);
 
 	if (ind > max_buf_size)
 	{
-		commands_printf("%s: -- ALARMA!!! -- send_alive() max buffer size %d, serialized bufer %d bytes. Memory corrupted!",
+		commands_printf("%s: -- ALARMA!!! -- send_stats() max buffer size %d, serialized bufer %d bytes. Memory corrupted!",
 						state_str(state), max_buf_size, ind);
 	}
 
@@ -1275,11 +1313,19 @@ void custom_app_data_handler(unsigned char *data, unsigned int len)
 
 	switch (command)
 	{
-	case SK_COMM_ALIVE:
+	case SK_COMM_ALIVE_POWER_STATS:
 		// Set alive_inc right there
 		if (!deserialize_alive(data, len, &ind))
 			return;
 
+		terminal_command = SEND_POWER_STATS;
+		break;
+	case SK_COMM_ALIVE_TEMP_STATS:
+		// Set alive_inc right there
+		if (!deserialize_alive(data, len, &ind))
+			return;
+
+		terminal_command = SEND_TEMP_STATS;
 		break;
 	case SK_COMM_SETTINGS_V1:
 		if (!deserialize_drive(data, len, &set_drive, &ind))
@@ -1288,7 +1334,6 @@ void custom_app_data_handler(unsigned char *data, unsigned int len)
 			return;
 
 		terminal_command = SET_CONF;
-
 		break;
 	default:
 		commands_printf("%s: -- Can't deserialize command -- Unknown command '%d'.",
@@ -1349,12 +1394,6 @@ void app_custom_start(void)
 	prev_erpm = 0;
 	prev_print = INT_MIN / 2;
 	prev_temps_print = INT_MIN / 2;
-	prev_printed_fets_temp = -1000;
-	prev_printed_motor_temp = -1000;
-	prev_printed_bat_temp = -1000;
-	prev_printed_wh_out = 0;
-	prev_printed_wh_in = 0;
-	prev_printed_bat_v = 0;
 	prev_printed_tac = INT_MIN / 2;
 	prev_printed_fault = FAULT_CODE_NONE;
 	v_in_filtered = GET_INPUT_VOLTAGE();
@@ -1485,51 +1524,16 @@ static bool brake_or_slowing(const int cur_tac, const int abs_tac)
 	return false;
 }
 
-inline static void print_stats_periodically(void)
+inline static void update_stats_check_faults(void)
 {
 	UTILS_LP_FAST(v_in_filtered, GET_INPUT_VOLTAGE(), 0.1);
 	mc_fault_code f = mc_interface_get_fault();
 
 	// Will print new fault immediately
-	if (f != prev_printed_fault || loop_step - prev_temps_print > temps_print_delay)
+	if (f != prev_printed_fault)
 	{
-		float fets_temp = mc_interface_temp_fet_filtered();
-		float motor_temp = mc_interface_temp_motor_filtered();
-		float bat_temp = get_battery_temp();
-		float wh_in = mc_interface_get_watt_hours(false);
-		float wh_out = mc_interface_get_watt_hours_charged(false);
-
-		// Small changes?
-		if (f == prev_printed_fault &&
-			fabs(fets_temp - prev_printed_fets_temp) < (double)1 &&
-			(motor_temp < -40 || fabs(motor_temp - prev_printed_motor_temp) < (double)1) &&
-			fabs(bat_temp - prev_printed_bat_temp) < (double)1 &&
-			fabs(wh_in - prev_printed_wh_in) < (double)0.001 &&
-			fabs(wh_out - prev_printed_wh_out) < (double)0.001 &&
-			fabs(v_in_filtered - prev_printed_bat_v) < (double)0.1)
-		{
-			prev_temps_print = loop_step;
-			return;
-		}
-
-		prev_printed_fets_temp = fets_temp;
-		prev_printed_motor_temp = motor_temp;
-		prev_printed_bat_temp = bat_temp;
-		prev_printed_wh_in = wh_in;
-		prev_printed_wh_out = wh_out;
-		prev_printed_bat_v = v_in_filtered;
-		prev_temps_print = loop_step;
 		prev_printed_fault = f;
-
-		commands_printf("%s: fault %s, t_fets %.1fC, t_motor %.1fC, t_bat %.1fC, wh_in %.3fWh, wh_out %.3fWh, v_bat %.2fV",
-						state_str(state),
-						mc_interface_fault_to_string(prev_printed_fault),
-						(double)prev_printed_fets_temp,
-						(double)prev_printed_motor_temp,
-						(double)prev_printed_bat_temp,
-						(double)prev_printed_wh_in,
-						(double)prev_printed_wh_out,
-						(double)prev_printed_bat_v);
+		send_fault(f);
 	}
 }
 
@@ -2025,8 +2029,10 @@ inline static void print_conf(const int cur_tac)
 {
 	float erpm;
 	float motor_amps;
+	float battery_amps;
 	float power;
-	get_stats(&erpm, &motor_amps, &power);
+	get_stats(&erpm, &motor_amps, &battery_amps);
+	power = v_in_filtered * battery_amps;
 
 	commands_printf("VESC additional info:");
 	commands_printf("  wheel diameter: %.2fmm", (double)(mc_conf->si_wheel_diameter * 1000));
@@ -2063,7 +2069,7 @@ inline static void print_conf(const int cur_tac)
 
 	commands_printf("SkyPUFF state:");
 	commands_printf("  %s: pos %.2fm (%d steps), speed %.1fm/s (%.1f ERPM)", state_str(state), (double)tac_steps_to_meters(cur_tac), cur_tac, (double)erpm_to_ms(erpm), (double)erpm);
-	commands_printf("  motor state %s: %.2fkg (%.1fA), power: %.1fW", motor_mode_str(current_motor_state.mode), (double)(motor_amps / config.amps_per_kg), (double)motor_amps, (double)power);
+	commands_printf("  motor state %s: %.2fkg (%.1fA), battery: %.1fA %.1fV, power: %.1fW", motor_mode_str(current_motor_state.mode), (double)(motor_amps / config.amps_per_kg), (double)motor_amps, (double)battery_amps, (double)v_in_filtered, (double)power);
 	commands_printf("  timeout reset interval: %dms", timeout_reset_interval);
 	commands_printf("  calculated force changing speed: %.2fKg/sec (%.1fA/sec)", (double)(amps_per_sec / config.amps_per_kg), (double)amps_per_sec);
 	commands_printf("  loop counter: %d, alive until: %d, %s", loop_step, alive_until, loop_step >= alive_until ? "communication timeout" : "no timeout");
@@ -2305,7 +2311,15 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 
 		break;
 	case SEND_CONF:
-		send_conf(*cur_tac);
+		send_conf();
+
+		break;
+	case SEND_POWER_STATS:
+		send_stats(*cur_tac, false);
+
+		break;
+	case SEND_TEMP_STATS:
+		send_stats(*cur_tac, true);
 
 		break;
 	case SET_CONF:
@@ -2351,11 +2365,18 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 			commands_printf("%s: -- Settings are set -- Have a nice puffs!", state_str(state));
 
 			// Announce new settings
-			send_conf(*cur_tac);
+			send_conf();
 
-			// Forget about UNITIALIZED :)
-			if (state == UNINITIALIZED)
+			switch (state)
+			{
+			case MANUAL_BRAKING: // Update braking force
+				manual_brake(*cur_tac);
+				break;
+			case UNINITIALIZED: // Forget about UNITIALIZED :)
 				braking(*cur_tac);
+			default:
+				break;
+			}
 
 			break;
 		default:
@@ -2566,7 +2587,6 @@ static THD_FUNCTION(my_thread, arg)
 		{
 			alive_until = loop_step + alive_inc;
 			alive_inc = 0;
-			send_alive(cur_tac);
 		}
 
 		// Communication timeout?
@@ -2586,7 +2606,7 @@ static THD_FUNCTION(my_thread, arg)
 		if (!(loop_step % antisex_measure_delay))
 			antisex_step(cur_tac);
 
-		print_stats_periodically();
+		update_stats_check_faults();
 
 		chThdSleepMilliseconds(1);
 	}
