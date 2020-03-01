@@ -1181,7 +1181,7 @@ inline static void serialize_power_stats(uint8_t *buffer, int32_t *ind, const in
 	buffer_append_int32(buffer, cur_tac, ind);
 	buffer_append_int16(buffer, erpm / 4, ind); // About +-120k ERPM max
 	buffer_append_float16(buffer, motor_amps, 1e1, ind);
-	buffer_append_float16(buffer, battery_amps, 1e1, ind);
+	buffer_append_float32(buffer, battery_amps, 1e3, ind);
 }
 
 inline static void serialize_temp_stats(uint8_t *buffer, int32_t *ind)
