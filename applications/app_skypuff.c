@@ -67,7 +67,7 @@
 	  '--': warning text until end of line 
 
 	Examples:
-		UNITIALIZED: -- CONFIGURATION IS OUT OF LIMITS -- Braking current 0.0A is out of limits (0.5, 20.0)
+		UNINITIALIZED: -- CONFIGURATION IS OUT OF LIMITS -- Braking current 0.0A is out of limits (0.5, 20.0)
 		BRAKING: pos 0.00m (0 steps), speed: -0.0ms (-0 ERPM), braking 1.0Kg (7.0A)
 
 	On double '--' UI will show message dialog with first payload as title and second as text.
@@ -823,6 +823,42 @@ static void read_config_from_eeprom(skypuff_config *c)
 		conf_general_read_eeprom_var_custom(e + a, a);
 }
 
+// Send new state to UI
+inline static void send_state(const skypuff_state s)
+{
+	const int max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
+	uint8_t buffer[max_buf_size];
+	int32_t ind = 0;
+
+	buffer[ind++] = SK_COMM_STATE;
+	buffer[ind++] = s;
+
+	commands_send_app_data(buffer, ind);
+}
+
+inline static void send_pulling_too_high(const float current)
+{
+	const int max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
+	uint8_t buffer[max_buf_size];
+	int32_t ind = 0;
+
+	buffer[ind++] = SK_COMM_PULLING_TOO_HIGH;
+	buffer_append_float16(buffer, current, 1e1, &ind);
+
+	commands_send_app_data(buffer, ind);
+}
+
+inline static void send_command_only(skypuff_custom_app_data_command c)
+{
+	const int max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
+	uint8_t buffer[max_buf_size];
+	int32_t ind = 0;
+
+	buffer[ind++] = c;
+
+	commands_send_app_data(buffer, ind);
+}
+
 // State setters functions
 inline static void brake_state(const int cur_tac, const skypuff_state new_state, const float current,
 							   const char *additional_msg)
@@ -841,6 +877,7 @@ inline static void brake_state(const int cur_tac, const skypuff_state new_state,
 						additional_msg);
 
 		state = new_state;
+		send_state(state);
 	}
 
 	prev_abs_tac = abs(cur_tac);
@@ -876,6 +913,7 @@ inline static void pull_state(const int cur_tac, const float pull_current, const
 	{
 		state_start_time = loop_step;
 		state = new_state;
+		send_state(state);
 	}
 
 	prev_print = loop_step;
@@ -948,6 +986,7 @@ inline static void manual_slow_back_speed_up(const int cur_tac)
 inline static void slowing(const int cur_tac, const float erpm)
 {
 	state = SLOWING;
+	send_state(state);
 
 	prev_print = loop_step;
 	prev_printed_tac = cur_tac;
@@ -971,6 +1010,7 @@ inline static void slow_state(const int cur_tac, const float cur_erpm,
 	float to_zero_constant_erpm = cur_tac < 0 ? constant_erpm : -constant_erpm;
 
 	state = new_state;
+	send_state(state);
 
 	prev_print = loop_step;
 	prev_printed_tac = cur_tac;
@@ -1268,7 +1308,6 @@ inline static void send_fault(const mc_fault_code f)
 	uint8_t buffer[max_buf_size];
 	int32_t ind = 0;
 
-	// Serialization magic: version, state, position, speed, drive settings, skypuff settings
 	buffer[ind++] = SK_COMM_FAULT;
 	buffer[ind++] = f;
 
@@ -1566,6 +1605,7 @@ inline static bool is_filtered_speed_too_low(const float cur_erpm)
 	// Takes about 500 iterations if speed is about zero to reach filtered 0.1
 	if (fabs(erpm_filtered) < (double)0.1)
 	{
+		send_command_only(SK_COMM_TOO_SLOW_SPEED_UP);
 		commands_printf("%s: -- Too slow speed up", state_str(state));
 		return true;
 	}
@@ -1594,6 +1634,7 @@ inline static bool unwinded_to_opposite_braking_zone(const int cur_tac, const fl
 	if ((cur_erpm > 0 && cur_tac >= config.braking_length) ||
 		(cur_erpm < 0 && cur_tac <= -config.braking_length))
 	{
+		send_command_only(SK_COMM_UNWINDED_TO_OPPOSITE);
 		commands_printf("%s: -- Unwinded to opposite braking zone", state_str(state));
 		return true;
 	}
@@ -1706,6 +1747,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 			int eof_slowing = config.braking_length + config.slowing_length;
 			if (prev_abs_tac < eof_slowing && abs_tac >= eof_slowing)
 			{
+				send_command_only(SK_COMM_UNWINDED_FROM_SLOWING);
 				commands_printf("%s: -- Unwinded from slowing zone %.2fm (%d steps)",
 								state_str(state),
 								(double)tac_steps_to_meters(cur_tac), cur_tac);
@@ -1775,6 +1817,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		// If current above the limits - brake or unwinding
 		if (abs_current > config.slow_max_current)
 		{
+			send_pulling_too_high(abs_current);
 			commands_printf(
 				"SLOW: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), -- Pulling too high %.1fKg (%.1fA) is more %.1fKg (%.1fA)",
 				(double)tac_steps_to_meters(cur_tac), cur_tac,
@@ -1876,6 +1919,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		// If current is above the limits
 		if (abs_current > config.manual_slow_max_current)
 		{
+			send_pulling_too_high(abs_current);
 			commands_printf(
 				"MANUAL_SLOW: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), -- Pulling too high %.1fKg (%.1fA) is more %.1fKg (%.1fA)",
 				(double)tac_steps_to_meters(cur_tac), cur_tac,
@@ -1916,6 +1960,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		// If current is above the limits
 		if (abs_current > config.manual_slow_max_current)
 		{
+			send_pulling_too_high(abs_current);
 			commands_printf(
 				"MANUAL_SLOW_BACK: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), -- Pulling too high %.1fKg (%.1fA) is more %.1fKg (%.1fA)",
 				(double)tac_steps_to_meters(cur_tac), cur_tac,
@@ -1951,6 +1996,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		if (loop_step == timeout_step)
 		{
 			float erpm = mc_interface_get_rpm();
+			send_command_only(SK_COMM_DETECTING_MOTION);
 			commands_printf("%s: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), -- Pre pull %.1fs timeout passed, saving position",
 							state_str(state),
 							(double)tac_steps_to_meters(cur_tac), cur_tac,
@@ -2107,7 +2153,7 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 		break;
 
 		default:
-			commands_printf("%s: -- Can't set zero -- Only possible from UNITIALIZED or BRAKING states",
+			commands_printf("%s: -- Can't set zero -- Only possible from UNINITIALIZED or BRAKING states",
 							state_str(state));
 			break;
 		}
@@ -2116,7 +2162,7 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 		switch (state)
 		{
 		case UNINITIALIZED:
-			commands_printf("%s: -- Can't switch to MANUAL_BRAKING -- Not possible from UNITIALIZED", state_str(state));
+			commands_printf("%s: -- Can't switch to MANUAL_BRAKING -- Not possible from UNINIITIALIZED", state_str(state));
 			break;
 		default:
 			manual_brake(*cur_tac);
@@ -2208,7 +2254,7 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 		// We need correct config.amps_per_kg and drive settings
 		if (state == UNINITIALIZED)
 		{
-			commands_printf("%s: -- Can't update pull force from UNITIALIZED", state_str(state));
+			commands_printf("%s: -- Can't update pull force from UNINITIALIZED", state_str(state));
 			break;
 		}
 
@@ -2362,6 +2408,7 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 
 			store_config_to_eeprom(&config);
 
+			send_command_only(SK_COMM_SETTINGS_APPLIED);
 			commands_printf("%s: -- Settings are set -- Have a nice puffs!", state_str(state));
 
 			// Announce new settings
@@ -2372,7 +2419,7 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 			case MANUAL_BRAKING: // Update braking force
 				manual_brake(*cur_tac);
 				break;
-			case UNINITIALIZED: // Forget about UNITIALIZED :)
+			case UNINITIALIZED: // Forget about UNINITIALIZED :)
 				braking(*cur_tac);
 			default:
 				break;
@@ -2380,7 +2427,7 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 
 			break;
 		default:
-			commands_printf("%s: -- Can't set configuration -- Only possible from UNITIALIZED or any BRAKING states",
+			commands_printf("%s: -- Can't set configuration -- Only possible from UNINITIALIZED or any BRAKING states",
 							state_str(state));
 		}
 
