@@ -36,12 +36,15 @@
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <ctype.h>
 
-// Uncomment to enable Smooth Motor Control debugging terminal commands
+// Uncomment to enable debugging terminal prints
 //#define DEBUG_SMOOTH_MOTOR
+// Send experiment graphs to Vesc Tool - Realtime Data - Experiment
 //#define DEBUG_ANTISEX
+//#define VERBOSE_TERMINAL
 
 #include "app_skypuff.h"
 
@@ -276,7 +279,7 @@ static const skypuff_config max_config = {
 	.antisex_reduce_amps_per_step = 10, // Be carefull with high amps per step and many steps
 };
 
-// Convert units functions
+// Convert units
 inline static float meters_per_rev(void)
 {
 	return mc_conf->si_wheel_diameter / mc_conf->si_gear_ratio * M_PI;
@@ -652,14 +655,37 @@ inline static void smooth_motor_current(const int cur_tac, const int abs_tac, co
 }
 
 // Helper functions to check limits
+inline static void send_out_of_limits(const char *format, ...)
+{
+	va_list args;
+
+	const int max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
+	uint8_t buffer[max_buf_size];
+	int32_t ind = 0;
+	int32_t printed;
+
+	buffer[ind++] = SK_COMM_OUT_OF_LIMITS;
+
+	va_start(args, format);
+	printed = vsnprintf((char *)(buffer + ind), max_buf_size - ind, format, args);
+	va_end(args);
+
+	commands_send_app_data(buffer, ind + printed);
+
+#ifdef VERBOSE_TERMINAL
+	commands_printf("%s: %s %s", state_str(state), limits_wrn, (char *)(buffer + ind));
+#endif
+}
+
 inline static bool is_int_out_of_limits(const char *name, const char *units,
 										const int val, const int min, const int max)
 {
 	if (val >= min && val <= max)
 		return false;
 
-	commands_printf("%s: %s %s: %d %s is out of limits [%d, %d]",
-					state_str(state), limits_wrn, name, val, units, min, max);
+	send_out_of_limits("%s %d %s is out of limits [%d, %d]",
+					   name, val, units, min, max);
+
 	return true;
 }
 
@@ -669,8 +695,8 @@ inline static bool is_float_out_of_limits(const char *name, const char *units,
 	if (val >= min && val <= max)
 		return false;
 
-	commands_printf("%s: %s %s: %.5f %s is out of limits [%.5f, %.5f]",
-					state_str(state), limits_wrn, name, (double)val, units, (double)min, (double)max);
+	send_out_of_limits("%s %.5f %s is out of limits [%.5f, %.5f]",
+					   name, (double)val, units, (double)min, (double)max);
 	return true;
 }
 
@@ -680,11 +706,11 @@ inline static bool is_pull_out_of_limits(const char *name,
 	if (amps >= min && amps <= max)
 		return false;
 
-	commands_printf("%s: %s %s: %.1fA (%.2fKg) is out of limits [%.1fA (%.2fKg), %.1fA (%.2fKg)]",
-					state_str(state), limits_wrn, name,
-					(double)amps, (double)(amps / config.amps_per_kg),
-					(double)min, (double)(min / config.amps_per_kg),
-					(double)max, (double)(max / config.amps_per_kg));
+	send_out_of_limits("%s %.1fA (%.2fKg) is out of limits [%.1fA (%.2fKg), %.1fA (%.2fKg)]",
+					   name,
+					   (double)amps, (double)(amps / config.amps_per_kg),
+					   (double)min, (double)(min / config.amps_per_kg),
+					   (double)max, (double)(max / config.amps_per_kg));
 	return true;
 }
 
@@ -694,11 +720,11 @@ inline static bool is_distance_out_of_limits(const char *name,
 	if (steps >= min && steps <= max)
 		return false;
 
-	commands_printf("%s: %s %s: %d steps (%.2f meters) is out of limits [%d (%.2fm), %d (%.2fm)]",
-					state_str(state), limits_wrn, name,
-					steps, (double)tac_steps_to_meters(steps),
-					min, (double)tac_steps_to_meters(min),
-					max, (double)tac_steps_to_meters(max));
+	send_out_of_limits("%s %d steps (%.2f meters) is out of limits [%d (%.2fm), %d (%.2fm)]",
+					   name,
+					   steps, (double)tac_steps_to_meters(steps),
+					   min, (double)tac_steps_to_meters(min),
+					   max, (double)tac_steps_to_meters(max));
 	return true;
 }
 
@@ -708,11 +734,11 @@ inline static bool is_speed_out_of_limits(const char *name,
 	if (erpm >= min && erpm <= max)
 		return false;
 
-	commands_printf("%s: %s %s: %.1f ERPM (%.1f m/s) is out of limits [%.1f (%.1f m/s), %.1f (%.1f m/s)]",
-					state_str(state), limits_wrn, name,
-					(double)erpm, (double)erpm_to_ms(erpm),
-					(double)min, (double)erpm_to_ms(min),
-					(double)max, (double)erpm_to_ms(max));
+	send_out_of_limits("%s %.1f ERPM (%.1f m/s) is out of limits [%.1f (%.1f m/s), %.1f (%.1f m/s)]",
+					   name,
+					   (double)erpm, (double)erpm_to_ms(erpm),
+					   (double)min, (double)erpm_to_ms(min),
+					   (double)max, (double)erpm_to_ms(max));
 	return true;
 }
 
@@ -720,8 +746,7 @@ static bool is_drive_config_out_of_limits(const skypuff_drive *drv)
 {
 	if (drv->motor_poles % 2)
 	{
-		commands_printf("%s: %s motor_poles: %dp must be odd",
-						state_str(state), limits_wrn, drv->motor_poles);
+		send_out_of_limits("motor_poles: %dp must be odd", drv->motor_poles);
 		return true;
 	}
 
@@ -796,7 +821,7 @@ static bool is_config_out_of_limits(const skypuff_config *conf)
 								min_config.antisex_reduce_steps, max_config.antisex_reduce_steps);
 }
 
-// EEPROM functions
+// EEPROM
 static void store_config_to_eeprom(const skypuff_config *c)
 {
 	mc_interface_release_motor();
@@ -848,6 +873,19 @@ inline static void send_pulling_too_high(const float current)
 	commands_send_app_data(buffer, ind);
 }
 
+inline static void send_force_is_set(void)
+{
+	const int max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
+	uint8_t buffer[max_buf_size];
+	int32_t ind = 0;
+
+	buffer[ind++] = SK_COMM_FORCE_IS_SET;
+	buffer_append_float16(buffer, config.pull_current, 1e1, &ind);
+	buffer_append_float16(buffer, amps_per_sec, 1e1, &ind);
+
+	commands_send_app_data(buffer, ind);
+}
+
 inline static void send_command_only(skypuff_custom_app_data_command c)
 {
 	const int max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
@@ -859,13 +897,14 @@ inline static void send_command_only(skypuff_custom_app_data_command c)
 	commands_send_app_data(buffer, ind);
 }
 
-// State setters functions
+// State setters
 inline static void brake_state(const int cur_tac, const skypuff_state new_state, const float current,
 							   const char *additional_msg)
 {
 	// Braking could be applied in the braking states to renew control timeout
 	if (state != new_state)
 	{
+#ifdef VERBOSE_TERMINAL
 		float erpm = mc_interface_get_rpm();
 		prev_print = loop_step;
 		prev_printed_tac = cur_tac;
@@ -875,7 +914,9 @@ inline static void brake_state(const int cur_tac, const skypuff_state new_state,
 						(double)erpm_to_ms(erpm), (double)erpm,
 						(double)(current / config.amps_per_kg), (double)current,
 						additional_msg);
-
+#else
+		(void)additional_msg;
+#endif
 		state = new_state;
 		send_state(state);
 	}
@@ -916,18 +957,20 @@ inline static void pull_state(const int cur_tac, const float pull_current, const
 		send_state(state);
 	}
 
+	prev_abs_tac = abs(cur_tac);
+	prev_erpm = mc_interface_get_rpm();
+#ifdef VERBOSE_TERMINAL
 	prev_print = loop_step;
 	prev_printed_tac = cur_tac;
-	float erpm = mc_interface_get_rpm();
 	commands_printf("%s: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), pull %.1fKg (%.1fA)%s",
 					state_str(state),
 					(double)tac_steps_to_meters(cur_tac), cur_tac,
-					(double)erpm_to_ms(erpm), (double)erpm,
+					(double)erpm_to_ms(prev_erpm), (double)prev_erpm,
 					(double)(current / config.amps_per_kg), (double)current,
 					additional_msg);
-
-	prev_abs_tac = abs(cur_tac);
-	prev_erpm = mc_interface_get_rpm();
+#else
+	(void)additional_msg;
+#endif
 
 	smooth_motor_current(cur_tac, prev_abs_tac, current);
 	timeout_reset();
@@ -990,12 +1033,15 @@ inline static void slowing(const int cur_tac, const float erpm)
 
 	prev_print = loop_step;
 	prev_printed_tac = cur_tac;
+#ifdef VERBOSE_TERMINAL
 	commands_printf("%s: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), until %.1fms (%.0f ERPM)",
 					state_str(state),
 					(double)tac_steps_to_meters(cur_tac), cur_tac,
 					(double)erpm_to_ms(erpm), (double)erpm,
 					(double)erpm_to_ms(config.slow_erpm), (double)config.slow_erpm);
-
+#else
+	(void)erpm;
+#endif
 	// Brake or release
 	if (config.slowing_current > 0.1)
 		smooth_motor_brake(cur_tac, fabs(cur_tac), config.slowing_current);
@@ -1014,12 +1060,13 @@ inline static void slow_state(const int cur_tac, const float cur_erpm,
 
 	prev_print = loop_step;
 	prev_printed_tac = cur_tac;
+#ifdef VERBOSE_TERMINAL
 	commands_printf("%s: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), constant speed %.1fms (%.0f ERPM)",
 					state_str(state),
 					(double)tac_steps_to_meters(cur_tac), cur_tac,
 					(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
 					(double)erpm_to_ms(to_zero_constant_erpm), (double)to_zero_constant_erpm);
-
+#endif
 	prev_erpm = cur_erpm;
 	smooth_motor_speed(to_zero_constant_erpm);
 	timeout_reset();
@@ -1677,6 +1724,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 			else
 				msg = ", -- Waiting for 'example_conf' or COMM_CUSTOM_APP_DATA";
 
+			// Always warn if UNINITIALIZED
 			print_position_periodically(cur_tac, long_print_delay, msg);
 		}
 		break;
@@ -1695,7 +1743,9 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		else
 			prev_abs_tac = abs_tac;
 
+#ifdef VERBOSE_TERMINAL
 		print_position_periodically(cur_tac, long_print_delay, "");
+#endif
 		break;
 	case BRAKING_EXTENSION:
 		// Moved to unwinding zone?
@@ -1718,7 +1768,9 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		else
 			prev_abs_tac = abs_tac;
 
+#ifdef VERBOSE_TERMINAL
 		print_position_periodically(cur_tac, long_print_delay, "");
+#endif
 		break;
 	case MANUAL_BRAKING:
 		// Apply brake again on timeout and position change
@@ -1727,8 +1779,10 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		else
 			prev_abs_tac = abs_tac;
 
+#ifdef VERBOSE_TERMINAL
 		print_position_periodically(cur_tac, long_print_delay,
 									loop_step >= alive_until ? ", -- Communication timeout" : "");
+#endif
 
 		break;
 	case UNWINDING:
@@ -1748,9 +1802,11 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 			if (prev_abs_tac < eof_slowing && abs_tac >= eof_slowing)
 			{
 				send_command_only(SK_COMM_UNWINDED_FROM_SLOWING);
+#ifdef VERBOSE_TERMINAL
 				commands_printf("%s: -- Unwinded from slowing zone %.2fm (%d steps)",
 								state_str(state),
 								(double)tac_steps_to_meters(cur_tac), cur_tac);
+#endif
 			}
 
 			// Update maximum value of tachometer
@@ -1763,8 +1819,9 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 			rewinding(cur_tac);
 			break;
 		}
-
+#ifdef VERBOSE_TERMINAL
 		print_position_periodically(cur_tac, long_print_delay, "");
+#endif
 		break;
 	case REWINDING:
 		// No system timeouts on this state
@@ -1783,7 +1840,9 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		if (abs_tac > prev_abs_tac + config.unwinding_trigger_length)
 			unwinding(cur_tac);
 
+#ifdef VERBOSE_TERMINAL
 		print_position_periodically(cur_tac, long_print_delay, "");
+#endif
 		break;
 	case SLOWING:
 		// We are in the braking range?
@@ -1803,7 +1862,9 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 			break;
 		}
 
+#ifdef VERBOSE_TERMINAL
 		slowing_or_speed_up_print(cur_tac, cur_erpm, config.slow_erpm);
+#endif
 		break;
 	case SLOW:
 		// No system timeouts on this state
@@ -1818,13 +1879,14 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		if (abs_current > config.slow_max_current)
 		{
 			send_pulling_too_high(abs_current);
+#ifdef VERBOSE_TERMINAL
 			commands_printf(
 				"SLOW: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), -- Pulling too high %.1fKg (%.1fA) is more %.1fKg (%.1fA)",
 				(double)tac_steps_to_meters(cur_tac), cur_tac,
 				(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
 				(double)(cur_current / config.amps_per_kg), (double)cur_current,
 				(double)(config.slow_max_current / config.amps_per_kg), (double)config.slow_max_current);
-
+#endif
 			brake_or_unwinding(cur_tac, abs_tac);
 			break;
 		}
@@ -1836,6 +1898,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 			break;
 		}
 
+#ifdef VERBOSE_TERMINAL
 		if (loop_step - prev_print > long_print_delay)
 		{
 			prev_print = loop_step;
@@ -1844,6 +1907,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 							(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
 							(double)(cur_current / config.amps_per_kg), (double)cur_current);
 		}
+#endif
 		break;
 	case MANUAL_SLOW_SPEED_UP:
 		// No system timeouts on this state
@@ -1871,8 +1935,9 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 			break;
 		}
 
+#ifdef VERBOSE_TERMINAL
 		slowing_or_speed_up_print(cur_tac, cur_erpm, config.manual_slow_erpm);
-
+#endif
 		break;
 	case MANUAL_SLOW_BACK_SPEED_UP:
 		// No system timeouts on this state
@@ -1896,7 +1961,9 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 			break;
 		}
 
+#ifdef VERBOSE_TERMINAL
 		slowing_or_speed_up_print(cur_tac, cur_erpm, config.manual_slow_erpm);
+#endif
 		break;
 	case MANUAL_SLOW:
 		// No system timeouts on this state
@@ -1911,7 +1978,9 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		if (abs_tac < config.braking_length + config.slowing_length &&
 			config.slow_erpm < config.manual_slow_erpm)
 		{
+#ifdef VERBOSE_TERMINAL
 			commands_printf("%s: -- Slowing zone, manual slow speed is too high, go SLOWING", state_str(state));
+#endif
 			slowing(cur_tac, cur_erpm);
 			break;
 		}
@@ -1920,13 +1989,14 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		if (abs_current > config.manual_slow_max_current)
 		{
 			send_pulling_too_high(abs_current);
+#ifdef VERBOSE_TERMINAL
 			commands_printf(
 				"MANUAL_SLOW: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), -- Pulling too high %.1fKg (%.1fA) is more %.1fKg (%.1fA)",
 				(double)tac_steps_to_meters(cur_tac), cur_tac,
 				(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
 				(double)(cur_current / config.amps_per_kg), (double)cur_current,
 				(double)(config.manual_slow_max_current / config.amps_per_kg), (double)config.manual_slow_max_current);
-
+#endif
 			brake_or_manual_brake(cur_tac, abs_tac);
 			break;
 		}
@@ -1938,6 +2008,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 			break;
 		}
 
+#ifdef VERBOSE_TERMINAL
 		if (loop_step - prev_print > long_print_delay)
 		{
 			prev_print = loop_step;
@@ -1946,7 +2017,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 							(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
 							(double)(cur_current / config.amps_per_kg), (double)cur_current);
 		}
-
+#endif
 		break;
 	case MANUAL_SLOW_BACK:
 		// No system timeouts on this state
@@ -1961,17 +2032,19 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		if (abs_current > config.manual_slow_max_current)
 		{
 			send_pulling_too_high(abs_current);
+#ifdef VERBOSE_TERMINAL
 			commands_printf(
 				"MANUAL_SLOW_BACK: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), -- Pulling too high %.1fKg (%.1fA) is more %.1fKg (%.1fA)",
 				(double)tac_steps_to_meters(cur_tac), cur_tac,
 				(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
 				(double)(cur_current / config.amps_per_kg), (double)cur_current,
 				(double)(config.manual_slow_max_current / config.amps_per_kg), (double)config.manual_slow_max_current);
-
+#endif
 			brake_or_manual_brake(cur_tac, abs_tac);
 			break;
 		}
 
+#ifdef VERBOSE_TERMINAL
 		if (loop_step - prev_print > long_print_delay)
 		{
 			prev_print = loop_step;
@@ -1980,7 +2053,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 							(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
 							(double)(cur_current / config.amps_per_kg), (double)cur_current);
 		}
-
+#endif
 		break;
 	case PRE_PULL:
 		// No system timeouts on this state
@@ -1995,25 +2068,29 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		int timeout_step = state_start_time + config.pre_pull_timeout;
 		if (loop_step == timeout_step)
 		{
-			float erpm = mc_interface_get_rpm();
 			send_command_only(SK_COMM_DETECTING_MOTION);
+#ifdef VERBOSE_TERMINAL
+			float erpm = mc_interface_get_rpm();
 			commands_printf("%s: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), -- Pre pull %.1fs timeout passed, saving position",
 							state_str(state),
 							(double)tac_steps_to_meters(cur_tac), cur_tac,
 							(double)erpm_to_ms(erpm), (double)erpm,
 							(double)config.pre_pull_timeout / (double)1000.0);
+#endif
 			prev_abs_tac = abs_tac;
 		}
 
 		// Timeout passed and moved enough to takeoff?
 		if (loop_step > timeout_step && abs(prev_abs_tac - abs_tac) >= config.takeoff_trigger_length)
 		{
+#ifdef VERBOSE_TERMINAL
 			float erpm = mc_interface_get_rpm();
 			commands_printf("%s: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), -- Motion %.2fm (%d steps) detected",
 							state_str(state),
 							(double)tac_steps_to_meters(cur_tac), cur_tac,
 							(double)erpm_to_ms(erpm), (double)erpm,
 							(double)tac_steps_to_meters(config.takeoff_trigger_length), config.takeoff_trigger_length);
+#endif
 			takeoff_pull(cur_tac);
 			break;
 		}
@@ -2032,17 +2109,21 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		// Enough time of weak takeoff pull?
 		if (loop_step >= state_start_time + config.takeoff_period)
 		{
+#ifdef VERBOSE_TERMINAL
 			float erpm = mc_interface_get_rpm();
 			commands_printf("%s: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), -- Takeoff %.1fs timeout passed",
 							state_str(state),
 							(double)tac_steps_to_meters(cur_tac), cur_tac,
 							(double)erpm_to_ms(erpm), (double)erpm,
 							(double)config.takeoff_period / (double)1000.0);
+#endif
 			pull(cur_tac);
 			break;
 		}
 
+#ifdef VERBOSE_TERMINAL
 		print_position_periodically(cur_tac, long_print_delay, "");
+#endif
 		break;
 	case PULL:
 	case FAST_PULL:
@@ -2054,7 +2135,9 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		if (brake_or_slowing(cur_tac, abs_tac))
 			break;
 
+#ifdef VERBOSE_TERMINAL
 		print_position_periodically(cur_tac, long_print_delay, "");
+#endif
 		break;
 #ifdef DEBUG_SMOOTH_MOTOR
 	case MANUAL_DEBUG_SMOOTH:
@@ -2139,16 +2222,19 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 		case BRAKING_EXTENSION:
 		case MANUAL_BRAKING:
 		{
-			float erpm = mc_interface_get_rpm();
 			mc_interface_get_tachometer_value(true);
 			prev_abs_tac = 0;
 			prev_printed_tac = 0;
 			*cur_tac = 0;
 			*abs_tac = 0;
+			send_command_only(SK_COMM_ZERO_IS_SET);
+#ifdef VERBOSE_TERMINAL
+			float erpm = mc_interface_get_rpm();
 			commands_printf("%s: pos %.2fm (%d steps), speed %.1fms (%0.f ERPM), -- Zero is set",
 							state_str(state),
 							(double)tac_steps_to_meters(*cur_tac), *cur_tac,
 							(double)erpm_to_ms(erpm), (double)erpm);
+#endif
 		}
 		break;
 
@@ -2272,10 +2358,12 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 		// Update smooth speed
 		smooth_calculate_new_speed();
 
+		send_force_is_set();
+#ifdef VERBOSE_TERMINAL
 		commands_printf("%s: -- %.2fKg (%.1fA, %.1fA/sec) is set",
 						state_str(state), (double)terminal_pull_kg, (double)config.pull_current,
 						(double)amps_per_sec);
-
+#endif
 		// Update pull force now?
 		switch (state)
 		{
@@ -2409,8 +2497,9 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 			store_config_to_eeprom(&config);
 
 			send_command_only(SK_COMM_SETTINGS_APPLIED);
+#ifdef VERBOSE_TERMINAL
 			commands_printf("%s: -- Settings are set -- Have a nice puffs!", state_str(state));
-
+#endif
 			// Announce new settings
 			send_conf();
 
