@@ -148,7 +148,7 @@ static int antisex_sent_zeroes;
 static volatile skypuff_state state; // Readable from commands threads too
 static skypuff_config config;
 static skypuff_config set_config; // Updates from terminal thread
-static skypuff_drive set_drive;   // Update mc_configuration additional drive settings
+static skypuff_drive set_drive;	  // Update mc_configuration additional drive settings
 
 // Terminal thread commands
 typedef enum
@@ -250,7 +250,7 @@ static const skypuff_config min_config = {
 static const skypuff_config max_config = {
 	.amps_per_kg = 30,
 	.pull_applying_period = 10000, // 10 secs
-	.rope_length = 5000 * 120,	 // 120 - maximum motor poles * 3
+	.rope_length = 5000 * 120,	   // 120 - maximum motor poles * 3
 	.braking_length = 100 * 120,
 	.braking_extension_length = 5000 * 120,
 	.slowing_length = 100 * 120,
@@ -262,7 +262,7 @@ static const skypuff_config max_config = {
 	.takeoff_pull_k = 0.8,
 	.fast_pull_k = 1.5,
 	.takeoff_trigger_length = 5000 * 120,
-	.pre_pull_timeout = 5000,   // 5 secs
+	.pre_pull_timeout = 5000,	// 5 secs
 	.takeoff_period = 60000,	// 1 min
 	.brake_current = 500,		// Charge battery mode possible
 	.slowing_current = 30,		// Do not brake hardly on high unwinding speeds
@@ -1464,7 +1464,7 @@ static void antisex_init(void)
 // threads here and set up callbacks.
 void app_custom_start(void)
 {
-	commands_printf("app_skypuff started");
+	app_uartcomm_start();
 
 	// Reset tachometer on app start to prevent instant unwinding to zero
 	mc_interface_get_tachometer_value(true);
@@ -1546,6 +1546,8 @@ void app_custom_start(void)
 
 	// Run control loop thread
 	chThdCreateStatic(my_thread_wa, sizeof(my_thread_wa), NORMALPRIO, my_thread, NULL);
+
+	commands_printf("app_skypuff and app_uartcomm started");
 }
 
 // Called when the custom application is stopped. Stop our threads
@@ -1570,7 +1572,7 @@ void app_custom_stop(void)
 	{
 		chThdSleepMilliseconds(1);
 	}
-	commands_printf("app_skypuff stopped");
+	commands_printf("app_skypuff and app_uartcomm stopped");
 }
 
 void app_custom_configure(app_configuration *conf)
