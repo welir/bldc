@@ -81,6 +81,9 @@
 const int short_print_delay = 500; // 0.5s, measured in control loop counts
 const int long_print_delay = 3000;
 const int smooth_max_step_delay = 100;
+const float motor_fan_on_temp = 50;
+const float motor_fan_off_temp = 48;
+const int motor_fan_check_delay = 200; // 200ms delay before checks
 
 const char *limits_wrn = "-- CONFIGURATION IS OUT OF LIMITS --";
 
@@ -97,6 +100,7 @@ static void terminal_set_example_conf(int argc, const char **argv);
 static void terminal_alive(int argc, const char **argv);
 static void terminal_set_state(int argc, const char **argv);
 static void terminal_set_pull_force(int argc, const char **argv);
+static void terminal_uart(int argc, const char **argv);
 #ifdef DEBUG_SMOOTH_MOTOR
 static void terminal_smooth(int argc, const char **argv);
 #endif
@@ -119,6 +123,7 @@ static int alive_until;					 // In good communication we trust until (i < alive_
 static int state_start_time;			 // Count the duration of state
 static float terminal_pull_kg;			 // Pulling force to set
 static volatile int alive_inc;			 // Communication timeout increment from terminal thread
+static bool is_motor_fan_active;		 // AUX_ON?
 
 // Prevent long time oscilations
 // Long rope in the air works like a big spring
@@ -1464,8 +1469,6 @@ static void antisex_init(void)
 // threads here and set up callbacks.
 void app_custom_start(void)
 {
-	app_uartcomm_start();
-
 	// Reset tachometer on app start to prevent instant unwinding to zero
 	mc_interface_get_tachometer_value(true);
 
@@ -1485,6 +1488,8 @@ void app_custom_start(void)
 	v_in_filtered = GET_INPUT_VOLTAGE();
 	terminal_command = DO_NOTHING;
 	stop_now = false;
+	is_motor_fan_active = false;
+	//AUX_OFF(); // Turn off fan on startup, will turn on when loops begin if temp is high
 
 	smooth_motor_release();
 
@@ -1537,6 +1542,10 @@ void app_custom_start(void)
 		"force",
 		"Set SkyPUFF pull force",
 		"[kg]", terminal_set_pull_force);
+	terminal_register_command_callback(
+		"uart",
+		"Run app_uartcomm",
+		"", terminal_uart);
 #ifdef DEBUG_SMOOTH_MOTOR
 	terminal_register_command_callback(
 		"smooth",
@@ -1547,7 +1556,7 @@ void app_custom_start(void)
 	// Run control loop thread
 	chThdCreateStatic(my_thread_wa, sizeof(my_thread_wa), NORMALPRIO, my_thread, NULL);
 
-	commands_printf("app_skypuff and app_uartcomm started");
+	commands_printf("app_skypuff started");
 }
 
 // Called when the custom application is stopped. Stop our threads
@@ -1563,6 +1572,7 @@ void app_custom_stop(void)
 	terminal_unregister_callback(terminal_alive);
 	terminal_unregister_callback(terminal_set_state);
 	terminal_unregister_callback(terminal_set_pull_force);
+	terminal_unregister_callback(terminal_uart);
 #ifdef DEBUG_SMOOTH_MOTOR
 	terminal_unregister_callback(terminal_smooth);
 #endif
@@ -1572,7 +1582,7 @@ void app_custom_stop(void)
 	{
 		chThdSleepMilliseconds(1);
 	}
-	commands_printf("app_skypuff and app_uartcomm stopped");
+	commands_printf("app_skypuff stopped");
 }
 
 void app_custom_configure(app_configuration *conf)
@@ -1622,6 +1632,23 @@ inline static void update_stats_check_faults(void)
 	{
 		prev_printed_fault = f;
 		send_fault(f);
+	}
+}
+
+inline static void start_stop_motor_fan(void)
+{
+	float motor_temp = mc_interface_temp_motor_filtered();
+
+	if (motor_temp >= motor_fan_on_temp && !is_motor_fan_active)
+	{
+		is_motor_fan_active = true;
+		AUX_ON();
+	}
+
+	if (motor_temp < motor_fan_off_temp && is_motor_fan_active)
+	{
+		is_motor_fan_active = false;
+		AUX_OFF();
 	}
 }
 
@@ -2201,6 +2228,7 @@ inline static void print_conf(const int cur_tac)
 	commands_printf("SkyPUFF state:");
 	commands_printf("  %s: pos %.2fm (%d steps), speed %.1fm/s (%.1f ERPM)", state_str(state), (double)tac_steps_to_meters(cur_tac), cur_tac, (double)erpm_to_ms(erpm), (double)erpm);
 	commands_printf("  motor state %s: %.2fkg (%.1fA), battery: %.1fA %.1fV, power: %.1fW", motor_mode_str(current_motor_state.mode), (double)(motor_amps / config.amps_per_kg), (double)motor_amps, (double)battery_amps, (double)v_in_filtered, (double)power);
+	commands_printf("  motor fan (AUX pin) is: %s", is_motor_fan_active ? "on" : "off");
 	commands_printf("  timeout reset interval: %dms", timeout_reset_interval);
 	commands_printf("  calculated force changing speed: %.2fKg/sec (%.1fA/sec)", (double)(amps_per_sec / config.amps_per_kg), (double)amps_per_sec);
 	commands_printf("  loop counter: %d, alive until: %d, %s", loop_step, alive_until, loop_step >= alive_until ? "communication timeout" : "no timeout");
@@ -2744,6 +2772,10 @@ static THD_FUNCTION(my_thread, arg)
 		if (!(loop_step % antisex_measure_delay))
 			antisex_step(cur_tac);
 
+		// Check motor temperature and start/stop fan (AUX_ON / AUX_OFF)
+		//if (!(loop_step % motor_fan_check_delay))
+		//	start_stop_motor_fan();
+
 		update_stats_check_faults();
 
 		chThdSleepMilliseconds(1);
@@ -2940,6 +2972,13 @@ static void terminal_set_state(int argc, const char **argv)
 		commands_printf("%s: -- 'set %s' not implemented",
 						state_str(state), argv[1]);
 	}
+}
+
+static void terminal_uart(int argc, const char **argv)
+{
+	(void)argc;
+	(void)argv;
+	app_uartcomm_start();
 }
 
 #ifdef DEBUG_SMOOTH_MOTOR
