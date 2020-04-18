@@ -114,7 +114,6 @@ static int loop_step;					 // Main control loop counter
 static int prev_abs_tac;				 // Detect movements
 static float prev_erpm;					 // Detect change in direction of rotation
 static int prev_print;					 // Loop counter value of the last state print
-static int prev_temps_print;			 // Loop counter value of the last temps print
 static int prev_printed_tac;			 // Do not print the same position
 static mc_fault_code prev_printed_fault; // Do not print (send) the same fault many times
 static float v_in_filtered;				 // Average for v_in
@@ -310,13 +309,13 @@ inline static float ms_to_erpm(float ms)
 	float rps = ms / meters_per_rev();
 	float rpm = rps * 60;
 
-	return rpm * (mc_conf->si_motor_poles / 2);
+	return rpm * ((float)mc_conf->si_motor_poles / 2);
 }
 
 inline static float erpm_to_ms(float erpm)
 {
 	float erps = erpm / 60;
-	float rps = erps / (mc_conf->si_motor_poles / 2);
+	float rps = erps / ((float)mc_conf->si_motor_poles / 2);
 
 	return rps * meters_per_rev();
 }
@@ -662,23 +661,20 @@ inline static void smooth_motor_current(const int cur_tac, const int abs_tac, co
 // Helper functions to check limits
 inline static void send_out_of_limits(const char *format, ...)
 {
-	va_list args;
-
-	const int max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
-	uint8_t buffer[max_buf_size];
+	static const int out_of_limits_max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
+	static uint8_t out_of_limits_buf[PACKET_MAX_PL_LEN - 1];
 	int32_t ind = 0;
-	int32_t printed;
+	out_of_limits_buf[ind++] = SK_COMM_OUT_OF_LIMITS;
 
-	buffer[ind++] = SK_COMM_OUT_OF_LIMITS;
-
+	va_list args;
 	va_start(args, format);
-	printed = vsnprintf((char *)(buffer + ind), max_buf_size - ind, format, args);
+	int32_t printed = vsnprintf((char *)(out_of_limits_buf + ind), out_of_limits_max_buf_size - ind, format, args);
 	va_end(args);
 
-	commands_send_app_data(buffer, ind + printed);
+	commands_send_app_data(out_of_limits_buf, ind + printed); // Not necessary to send last NULL
 
 #ifdef VERBOSE_TERMINAL
-	commands_printf("%s: %s %s", state_str(state), limits_wrn, (char *)(buffer + ind));
+	commands_printf("%s: %s %s", state_str(state), limits_wrn, (char *)(out_of_limits_buf + ind));
 #endif
 }
 
@@ -1469,6 +1465,9 @@ static void antisex_init(void)
 // threads here and set up callbacks.
 void app_custom_start(void)
 {
+	// Enable WiFi controll
+	app_uartcomm_start();
+
 	// Reset tachometer on app start to prevent instant unwinding to zero
 	mc_interface_get_tachometer_value(true);
 
@@ -1478,13 +1477,10 @@ void app_custom_start(void)
 	timeout_reset_interval = app_get_configuration()->timeout_msec / 2;
 	prev_print = INT_MIN / 2;
 	prev_printed_tac = INT_MIN / 2;
+	prev_printed_fault = FAULT_CODE_NONE;
 	alive_until = 0;
 	prev_abs_tac = 0;
 	prev_erpm = 0;
-	prev_print = INT_MIN / 2;
-	prev_temps_print = INT_MIN / 2;
-	prev_printed_tac = INT_MIN / 2;
-	prev_printed_fault = FAULT_CODE_NONE;
 	v_in_filtered = GET_INPUT_VOLTAGE();
 	terminal_command = DO_NOTHING;
 	stop_now = false;
@@ -2124,7 +2120,9 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 			break;
 		}
 
+#ifdef VERBOSE_TERMINAL
 		print_position_periodically(cur_tac, long_print_delay, "");
+#endif
 		break;
 	case TAKEOFF_PULL:
 		// No system timeouts on this state
@@ -2773,8 +2771,8 @@ static THD_FUNCTION(my_thread, arg)
 			antisex_step(cur_tac);
 
 		// Check motor temperature and start/stop fan (AUX_ON / AUX_OFF)
-		//if (!(loop_step % motor_fan_check_delay))
-		//	start_stop_motor_fan();
+		if (!(loop_step % motor_fan_check_delay))
+			start_stop_motor_fan();
 
 		update_stats_check_faults();
 
@@ -2893,10 +2891,6 @@ static void terminal_set_pull_force(int argc, const char **argv)
 inline static void uppercase(char *out, const char *in, const int out_len)
 {
 	int in_len = strlen(in);
-
-	// do not crash MCU occasionally
-	if (out_len <= 0 || out_len > 1024)
-		return;
 
 	// Get minumum
 	int valid_len = out_len - 1 < in_len ? out_len - 1 : in_len;
