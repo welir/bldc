@@ -39,6 +39,7 @@ int32_t confgenerator_serialize_mcconf(uint8_t *buffer, const mc_configuration *
 	buffer_append_float32_auto(buffer, conf->l_watt_min, &ind);
 	buffer_append_float32_auto(buffer, conf->l_current_max_scale, &ind);
 	buffer_append_float32_auto(buffer, conf->l_current_min_scale, &ind);
+	buffer_append_float32_auto(buffer, conf->l_duty_start, &ind);
 	buffer_append_float32_auto(buffer, conf->sl_min_erpm, &ind);
 	buffer_append_float32_auto(buffer, conf->sl_min_erpm_cycle_int_limit, &ind);
 	buffer_append_float32_auto(buffer, conf->sl_max_fullbreak_current_dir_change, &ind);
@@ -262,6 +263,12 @@ int32_t confgenerator_serialize_appconf(uint8_t *buffer, const app_configuration
 	buffer_append_uint16(buffer, conf->app_balance_conf.overspeed_delay, &ind);
 	buffer_append_uint16(buffer, conf->app_balance_conf.fault_delay, &ind);
 	buffer_append_float32_auto(buffer, conf->app_balance_conf.tiltback_constant, &ind);
+	buffer_append_float32_auto(buffer, conf->app_balance_conf.roll_steer_erpm_kp, &ind);
+	buffer_append_float32_auto(buffer, conf->app_balance_conf.yaw_current_clamp, &ind);
+	buffer_append_uint16(buffer, conf->app_balance_conf.adc_half_fault_erpm, &ind);
+	buffer_append_float32_auto(buffer, conf->app_balance_conf.setpoint_pitch_filter, &ind);
+	buffer_append_float32_auto(buffer, conf->app_balance_conf.setpoint_target_filter, &ind);
+	buffer_append_float32_auto(buffer, conf->app_balance_conf.setpoint_clamp, &ind);
 	buffer[ind++] = conf->imu_conf.type;
 	buffer[ind++] = conf->imu_conf.mode;
 	buffer_append_uint16(buffer, conf->imu_conf.sample_rate_hz, &ind);
@@ -324,6 +331,7 @@ bool confgenerator_deserialize_mcconf(const uint8_t *buffer, mc_configuration *c
 	conf->l_watt_min = buffer_get_float32_auto(buffer, &ind);
 	conf->l_current_max_scale = buffer_get_float32_auto(buffer, &ind);
 	conf->l_current_min_scale = buffer_get_float32_auto(buffer, &ind);
+	conf->l_duty_start = buffer_get_float32_auto(buffer, &ind);
 	conf->sl_min_erpm = buffer_get_float32_auto(buffer, &ind);
 	conf->sl_min_erpm_cycle_int_limit = buffer_get_float32_auto(buffer, &ind);
 	conf->sl_max_fullbreak_current_dir_change = buffer_get_float32_auto(buffer, &ind);
@@ -550,6 +558,12 @@ bool confgenerator_deserialize_appconf(const uint8_t *buffer, app_configuration 
 	conf->app_balance_conf.overspeed_delay = buffer_get_uint16(buffer, &ind);
 	conf->app_balance_conf.fault_delay = buffer_get_uint16(buffer, &ind);
 	conf->app_balance_conf.tiltback_constant = buffer_get_float32_auto(buffer, &ind);
+	conf->app_balance_conf.roll_steer_erpm_kp = buffer_get_float32_auto(buffer, &ind);
+	conf->app_balance_conf.yaw_current_clamp = buffer_get_float32_auto(buffer, &ind);
+	conf->app_balance_conf.adc_half_fault_erpm = buffer_get_uint16(buffer, &ind);
+	conf->app_balance_conf.setpoint_pitch_filter = buffer_get_float32_auto(buffer, &ind);
+	conf->app_balance_conf.setpoint_target_filter = buffer_get_float32_auto(buffer, &ind);
+	conf->app_balance_conf.setpoint_clamp = buffer_get_float32_auto(buffer, &ind);
 	conf->imu_conf.type = buffer[ind++];
 	conf->imu_conf.mode = buffer[ind++];
 	conf->imu_conf.sample_rate_hz = buffer_get_uint16(buffer, &ind);
@@ -605,6 +619,7 @@ void confgenerator_set_defaults_mcconf(mc_configuration *conf) {
 	conf->l_watt_min = MCCONF_L_WATT_MIN;
 	conf->l_current_max_scale = MCCONF_L_CURRENT_MAX_SCALE;
 	conf->l_current_min_scale = MCCONF_L_CURRENT_MIN_SCALE;
+	conf->l_duty_start = MCCONF_L_DUTY_START;
 	conf->sl_min_erpm = MCCONF_SL_MIN_RPM;
 	conf->sl_min_erpm_cycle_int_limit = MCCONF_SL_MIN_ERPM_CYCLE_INT_LIMIT;
 	conf->sl_max_fullbreak_current_dir_change = MCCONF_SL_MAX_FB_CURR_DIR_CHANGE;
@@ -822,6 +837,12 @@ void confgenerator_set_defaults_appconf(app_configuration *conf) {
 	conf->app_balance_conf.overspeed_delay = APPCONF_BALANCE_OVERSPEED_DELAY;
 	conf->app_balance_conf.fault_delay = APPCONF_BALANCE_FAULT_DELAY;
 	conf->app_balance_conf.tiltback_constant = APPCONF_BALANCE_TILTBACK_CONSTANT;
+	conf->app_balance_conf.roll_steer_erpm_kp = APPCONF_BALANCE_ROLL_STEER_ERPM_KP;
+	conf->app_balance_conf.yaw_current_clamp = APPCONF_BALANCE_YAW_CURRENT_CLAMP;
+	conf->app_balance_conf.adc_half_fault_erpm = APPCONF_BALANCE_ADC_HALF_FAULT_ERPM;
+	conf->app_balance_conf.setpoint_pitch_filter = APPCONF_BALANCE_SETPOINT_PITCH_FILTER;
+	conf->app_balance_conf.setpoint_target_filter = APPCONF_BALANCE_SETPOINT_TARGET_FILTER;
+	conf->app_balance_conf.setpoint_clamp = APPCONF_BALANCE_SETPOINT_CLAMP;
 	conf->imu_conf.type = APPCONF_IMU_TYPE;
 	conf->imu_conf.mode = APPCONF_IMU_AHRS_MODE;
 	conf->imu_conf.sample_rate_hz = APPCONF_IMU_SAMPLE_RATE_HZ;
