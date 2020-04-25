@@ -133,7 +133,8 @@ const float antisex_erpm_filtering_k = 0.1;
 const float antisex_acceleration_time_k = (float)1000.0 / (float)(antisex_erpm_filtering_steps * antisex_measure_delay);
 const int antisex_measure_steps = 2; // I did some tests, works better on 2 steps then 1 step
 
-static float antisex_amps; // Force additive value to prevent oscilations
+static float antisex_amps;		// Force additive value to prevent oscilations
+static float antisex_amps_gain; // Force gain
 static float antisex_erpm_filtered;
 static float antisex_erpm_prev_filtered;
 static float antisex_acceleration_prev;
@@ -249,6 +250,7 @@ static const skypuff_config min_config = {
 	.antisex_reduce_amps = 1,
 	.antisex_reduce_steps = 0,
 	.antisex_reduce_amps_per_step = 0,
+	.antisex_unwinding_gain = 0.8,
 };
 
 static const skypuff_config max_config = {
@@ -281,7 +283,7 @@ static const skypuff_config max_config = {
 	.antisex_reduce_amps = 40,			  // Too much can cause strong braking with current spikes
 	.antisex_reduce_steps = 10,
 	.antisex_reduce_amps_per_step = 10, // Be carefull with high amps per step and many steps
-};
+	.antisex_unwinding_gain = 1.2};
 
 // Convert units
 inline static float meters_per_rev(void)
@@ -370,7 +372,7 @@ inline static void smooth_motor_instant_current(void)
 
 	current_motor_state = target_motor_state;
 
-	mc_interface_set_current(target_motor_state.param.current + antisex_amps);
+	mc_interface_set_current(target_motor_state.param.current * antisex_amps_gain + antisex_amps);
 
 	next_smooth_motor_adjustment = INT_MAX;
 	prev_smooth_motor_adjustment = loop_step;
@@ -573,7 +575,7 @@ inline static void smooth_motor_adjustment(const int cur_tac, const int abs_tac)
 				return;
 			}
 
-			mc_interface_set_current(step_current + antisex_amps);
+			mc_interface_set_current(step_current * antisex_amps_gain + antisex_amps);
 			current_motor_state.param.current = step_current;
 
 			prev_smooth_motor_adjustment = loop_step;
@@ -819,7 +821,9 @@ static bool is_config_out_of_limits(const skypuff_config *conf)
 		   is_pull_out_of_limits("antisex_reduce_amps_per_step", conf->antisex_reduce_amps_per_step,
 								 min_config.antisex_reduce_amps_per_step, max_config.antisex_reduce_amps_per_step) ||
 		   is_int_out_of_limits("antisex_reduce_steps", "steps", conf->antisex_reduce_steps,
-								min_config.antisex_reduce_steps, max_config.antisex_reduce_steps);
+								min_config.antisex_reduce_steps, max_config.antisex_reduce_steps) ||
+		   is_float_out_of_limits("antisex_unwinding_gain", "", conf->antisex_unwinding_gain,
+								  min_config.antisex_unwinding_gain, max_config.antisex_unwinding_gain);
 }
 
 // EEPROM
@@ -1125,10 +1129,11 @@ static void set_example_conf(skypuff_config *cfg)
 	cfg->takeoff_period = 5 * 1000;
 
 	// Antisex
-	cfg->antisex_starting_integral = 2000;
+	cfg->antisex_starting_integral = 20000;
 	cfg->antisex_reduce_amps = 16;
 	cfg->antisex_reduce_steps = 2;
 	cfg->antisex_reduce_amps_per_step = 3;
+	cfg->antisex_unwinding_gain = 1.2;
 }
 
 // Serialization/deserialization functions
@@ -1193,11 +1198,12 @@ inline static void serialize_config(uint8_t *buffer, int32_t *ind)
 	buffer_append_float32_auto(buffer, config.antisex_reduce_amps, ind);
 	buffer_append_int32(buffer, config.antisex_reduce_steps, ind);
 	buffer_append_float32_auto(buffer, config.antisex_reduce_amps_per_step, ind);
+	buffer_append_float16(buffer, config.antisex_unwinding_gain, 1e2, ind);
 }
 
 inline static bool deserialize_config(unsigned char *data, unsigned int len, skypuff_config *to, int32_t *ind)
 {
-	const int32_t serialized_settings_v1_length = 4 * 29 - 2;
+	const int32_t serialized_settings_v1_length = 4 * 29 - 2 + 2;
 
 	int available_bytes = len - *ind;
 	if (available_bytes < serialized_settings_v1_length)
@@ -1241,6 +1247,7 @@ inline static bool deserialize_config(unsigned char *data, unsigned int len, sky
 	to->antisex_reduce_amps = buffer_get_float32_auto(data, ind);
 	to->antisex_reduce_steps = buffer_get_int32(data, ind);
 	to->antisex_reduce_amps_per_step = buffer_get_float32_auto(data, ind);
+	to->antisex_unwinding_gain = buffer_get_float16(data, 1e2, ind);
 
 	return true;
 }
@@ -1445,6 +1452,7 @@ static void antisex_init(void)
 	antisex_acceleration_integral = 0;
 	antisex_acceleration_prev = 0;
 	antisex_amps = 0;
+	antisex_amps_gain = 1;
 	antisex_deceleration_sign = 0;
 	antisex_reduce_step = 0;
 	antisex_measure_step = 0;
@@ -2224,6 +2232,7 @@ inline static void print_conf(const int cur_tac)
 	commands_printf("  antisex reducing force: %.2fkg (%.1fA)", (double)(config.antisex_reduce_amps / config.amps_per_kg), (double)config.antisex_reduce_amps);
 	commands_printf("  antisex reduce steps: %d", config.antisex_reduce_steps);
 	commands_printf("  antisex reducing step increase: %.2fkg (%.1fA)", (double)(config.antisex_reduce_amps_per_step / config.amps_per_kg), (double)config.antisex_reduce_amps_per_step);
+	commands_printf("  antisex unwinding gain: %.2f", (double)config.antisex_unwinding_gain);
 
 	commands_printf("SkyPUFF state:");
 	commands_printf("  %s: pos %.2fm (%d steps), speed %.1fm/s (%.1f ERPM)", state_str(state), (double)tac_steps_to_meters(cur_tac), cur_tac, (double)erpm_to_ms(erpm), (double)erpm);
@@ -2608,14 +2617,14 @@ static inline void antisex_send_graph(const int cur_tac, const float acceleratio
 	// Adapt cur_tac to graph
 	int graph_pos = cur_tac * 30;
 	if (graph_pos < -20000)
-		graph_pos += 40000;
+		graph_pos += 60000;
 	else if (graph_pos > 20000)
-		graph_pos -= 40000;
+		graph_pos -= 60000;
 
 	commands_send_plot_points(loop_step, graph_pos);
 
 	commands_plot_set_graph(n++);
-	commands_send_plot_points(loop_step, current_motor_state.mode == MOTOR_CURRENT ? (current_motor_state.param.current + antisex_amps) * 200 : 0);
+	commands_send_plot_points(loop_step, current_motor_state.mode == MOTOR_CURRENT ? (current_motor_state.param.current * antisex_amps_gain + antisex_amps) * 200 : 0);
 }
 #endif
 
@@ -2623,7 +2632,7 @@ static inline void antisex_adjustment(void)
 {
 	// Change motor current only if we are in pull states
 	if (current_motor_state.mode == MOTOR_CURRENT)
-		mc_interface_set_current(current_motor_state.param.current + antisex_amps);
+		mc_interface_set_current(current_motor_state.param.current * antisex_amps_gain + antisex_amps);
 }
 
 static inline bool antisex_is_unwinding_within_hall_speed(const int cur_tac)
@@ -2644,6 +2653,25 @@ static inline bool antisex_is_unwinding_within_hall_speed(const int cur_tac)
 static inline void antisex_step(const int cur_tac)
 {
 	UTILS_LP_FAST(antisex_erpm_filtered, mc_interface_get_rpm(), antisex_erpm_filtering_k);
+
+	// Calculate current direction
+	float antisex_amps_gain_current;
+	if (cur_tac <= 0)
+		if (antisex_erpm_filtered < 0)
+			antisex_amps_gain_current = config.antisex_unwinding_gain;
+		else
+			antisex_amps_gain_current = 1;
+	else if (antisex_erpm_filtered > 0)
+		antisex_amps_gain_current = config.antisex_unwinding_gain;
+	else
+		antisex_amps_gain_current = 1;
+
+	// Update motor amps, if gain changed
+	if (antisex_amps_gain != antisex_amps_gain_current)
+	{
+		antisex_amps_gain = antisex_amps_gain_current;
+		antisex_adjustment();
+	}
 
 	antisex_erpm_filtering_step++;
 
