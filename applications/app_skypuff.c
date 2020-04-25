@@ -43,8 +43,9 @@
 // Uncomment to enable debugging terminal prints
 //#define DEBUG_SMOOTH_MOTOR
 // Send experiment graphs to Vesc Tool - Realtime Data - Experiment
-//#define DEBUG_ANTISEX
-//#define VERBOSE_TERMINAL
+#define DEBUG_ANTISEX
+//#define DEBUG_ANTISEX_INTEGRAL
+#define VERBOSE_TERMINAL
 
 #include "app_skypuff.h"
 
@@ -100,7 +101,6 @@ static void terminal_set_example_conf(int argc, const char **argv);
 static void terminal_alive(int argc, const char **argv);
 static void terminal_set_state(int argc, const char **argv);
 static void terminal_set_pull_force(int argc, const char **argv);
-static void terminal_uart(int argc, const char **argv);
 #ifdef DEBUG_SMOOTH_MOTOR
 static void terminal_smooth(int argc, const char **argv);
 #endif
@@ -1125,8 +1125,8 @@ static void set_example_conf(skypuff_config *cfg)
 	cfg->takeoff_period = 5 * 1000;
 
 	// Antisex
-	cfg->antisex_starting_integral = 5000;
-	cfg->antisex_reduce_amps = 10;
+	cfg->antisex_starting_integral = 2000;
+	cfg->antisex_reduce_amps = 16;
 	cfg->antisex_reduce_steps = 2;
 	cfg->antisex_reduce_amps_per_step = 3;
 }
@@ -1455,7 +1455,9 @@ static void antisex_init(void)
 	commands_init_plot("Milliseconds", "Speed");
 	commands_plot_add_graph("Speed filtered");
 	commands_plot_add_graph("Acceleration");
-	//commands_plot_add_graph("Acceleration integral");
+#ifdef DEBUG_ANTISEX_INTEGRAL
+	commands_plot_add_graph("Acceleration integral");
+#endif
 	commands_plot_add_graph("Position");
 	commands_plot_add_graph("Antisex Amps");
 #endif
@@ -1538,10 +1540,6 @@ void app_custom_start(void)
 		"force",
 		"Set SkyPUFF pull force",
 		"[kg]", terminal_set_pull_force);
-	terminal_register_command_callback(
-		"uart",
-		"Run app_uartcomm",
-		"", terminal_uart);
 #ifdef DEBUG_SMOOTH_MOTOR
 	terminal_register_command_callback(
 		"smooth",
@@ -1568,7 +1566,6 @@ void app_custom_stop(void)
 	terminal_unregister_callback(terminal_alive);
 	terminal_unregister_callback(terminal_set_state);
 	terminal_unregister_callback(terminal_set_pull_force);
-	terminal_unregister_callback(terminal_uart);
 #ifdef DEBUG_SMOOTH_MOTOR
 	terminal_unregister_callback(terminal_smooth);
 #endif
@@ -2223,6 +2220,11 @@ inline static void print_conf(const int cur_tac)
 	commands_printf("  takeoff pull coefficient: %.0f%% (%.2fkg, %.5f)", (double)config.takeoff_pull_k * (double)100.0, (double)(config.pull_current / config.amps_per_kg * config.takeoff_pull_k), (double)config.takeoff_pull_k);
 	commands_printf("  fast pull coefficient: %.0f%% (%.2fkg, %.5f)", (double)config.fast_pull_k * (double)100.0, (double)(config.pull_current / config.amps_per_kg * config.fast_pull_k), (double)config.fast_pull_k);
 
+	commands_printf("  antisex starting integral: %.1fms (%.0f ERPM)", (double)erpm_to_ms(config.antisex_starting_integral), (double)config.antisex_starting_integral);
+	commands_printf("  antisex reducing force: %.2fkg (%.1fA)", (double)(config.antisex_reduce_amps / config.amps_per_kg), (double)config.antisex_reduce_amps);
+	commands_printf("  antisex reduce steps: %d", config.antisex_reduce_steps);
+	commands_printf("  antisex reducing step increase: %.2fkg (%.1fA)", (double)(config.antisex_reduce_amps_per_step / config.amps_per_kg), (double)config.antisex_reduce_amps_per_step);
+
 	commands_printf("SkyPUFF state:");
 	commands_printf("  %s: pos %.2fm (%d steps), speed %.1fm/s (%.1f ERPM)", state_str(state), (double)tac_steps_to_meters(cur_tac), cur_tac, (double)erpm_to_ms(erpm), (double)erpm);
 	commands_printf("  motor state %s: %.2fkg (%.1fA), battery: %.1fA %.1fV, power: %.1fW", motor_mode_str(current_motor_state.mode), (double)(motor_amps / config.amps_per_kg), (double)motor_amps, (double)battery_amps, (double)v_in_filtered, (double)power);
@@ -2513,7 +2515,7 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 				new_mc_conf.si_wheel_diameter = set_drive.wheel_diameter;
 
 				// TODO: move this code into separate function and use from commands.c
-				conf_general_store_mc_configuration(&new_mc_conf);
+				conf_general_store_mc_configuration(&new_mc_conf, false);
 				mc_interface_set_configuration(&new_mc_conf);
 				mc_conf = mc_interface_get_configuration();
 			}
@@ -2589,16 +2591,19 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 #ifdef DEBUG_ANTISEX
 static inline void antisex_send_graph(const int cur_tac, const float acceleration)
 {
-	commands_plot_set_graph(0);
+	int n = 0;
+	commands_plot_set_graph(n++);
 	commands_send_plot_points(loop_step, antisex_erpm_filtered);
 
-	commands_plot_set_graph(1);
+	commands_plot_set_graph(n++);
 	commands_send_plot_points(loop_step, acceleration);
 
-	//commands_plot_set_graph(2);
-	//commands_send_plot_points(loop_step, antisex_acceleration_integral);
+#ifdef DEBUG_ANTISEX_INTEGRAL
+	commands_plot_set_graph(n++);
+	commands_send_plot_points(loop_step, antisex_acceleration_integral);
+#endif
 
-	commands_plot_set_graph(2);
+	commands_plot_set_graph(n++);
 
 	// Adapt cur_tac to graph
 	int graph_pos = cur_tac * 30;
@@ -2609,7 +2614,7 @@ static inline void antisex_send_graph(const int cur_tac, const float acceleratio
 
 	commands_send_plot_points(loop_step, graph_pos);
 
-	commands_plot_set_graph(3);
+	commands_plot_set_graph(n++);
 	commands_send_plot_points(loop_step, current_motor_state.mode == MOTOR_CURRENT ? (current_motor_state.param.current + antisex_amps) * 200 : 0);
 }
 #endif
@@ -2619,6 +2624,21 @@ static inline void antisex_adjustment(void)
 	// Change motor current only if we are in pull states
 	if (current_motor_state.mode == MOTOR_CURRENT)
 		mc_interface_set_current(current_motor_state.param.current + antisex_amps);
+}
+
+static inline bool antisex_is_unwinding_within_hall_speed(const int cur_tac)
+{
+	// Check direction is unwinding and speed is less then sensorless
+	if (cur_tac <= 0)
+	{
+		// This if should inner not to compare cur_tac twice
+		if (antisex_erpm_filtered < 0 && antisex_erpm_filtered >= -mc_conf->foc_sl_erpm)
+			return true;
+	}
+	else if (antisex_erpm_filtered > 0 && antisex_erpm_filtered <= mc_conf->foc_sl_erpm)
+		return true;
+
+	return false;
 }
 
 static inline void antisex_step(const int cur_tac)
@@ -2636,7 +2656,8 @@ static inline void antisex_step(const int cur_tac)
 
 	antisex_erpm_prev_filtered = antisex_erpm_filtered;
 
-	// Acceleration crossing near zero?
+	static bool use_final_step;
+	// Acceleration crossed zero?
 	if ((acceleration > -0.1 && antisex_acceleration_prev < 0) || (acceleration < 0.1 && antisex_acceleration_prev > 0))
 	{
 		// Calculate if it's time to start decceleration sequence?
@@ -2648,6 +2669,15 @@ static inline void antisex_step(const int cur_tac)
 				antisex_acceleration_before_reduce = acceleration;
 				antisex_reduce_step = 0;
 				antisex_measure_step = antisex_measure_steps; // Apply on first step
+				use_final_step = true;
+			}
+			else if (antisex_acceleration_integral < -config.antisex_starting_integral)
+			{
+				antisex_deceleration_sign = 1;
+				antisex_acceleration_before_reduce = acceleration;
+				antisex_reduce_step = 0;
+				antisex_measure_step = antisex_measure_steps; // Apply on first step
+				use_final_step = false;
 			}
 		}
 		else // cur_tac is above zero
@@ -2658,6 +2688,15 @@ static inline void antisex_step(const int cur_tac)
 				antisex_acceleration_before_reduce = acceleration;
 				antisex_reduce_step = 0;
 				antisex_measure_step = antisex_measure_steps; // Apply on first step
+				use_final_step = true;
+			}
+			else if (antisex_acceleration_integral > config.antisex_starting_integral)
+			{
+				antisex_deceleration_sign = -1;
+				antisex_acceleration_before_reduce = acceleration;
+				antisex_reduce_step = 0;
+				antisex_measure_step = antisex_measure_steps; // Apply on first step
+				use_final_step = false;
 			}
 		}
 
@@ -2666,7 +2705,7 @@ static inline void antisex_step(const int cur_tac)
 
 	antisex_acceleration_prev = acceleration;
 
-	antisex_acceleration_integral += acceleration / antisex_erpm_filtering_steps;
+	antisex_acceleration_integral += acceleration * ((float)(antisex_measure_delay * antisex_erpm_filtering_steps) / 1000.0F);
 
 	// Previous loop was deceleartion?
 	if (antisex_amps)
@@ -2685,18 +2724,18 @@ static inline void antisex_step(const int cur_tac)
 			bool final_step = false;
 			if (antisex_deceleration_sign == -1)
 			{
-				if (acceleration > antisex_acceleration_before_reduce)
+				if (acceleration > antisex_acceleration_before_reduce || antisex_is_unwinding_within_hall_speed(cur_tac))
 					final_step = true; //antisex_deceleration_sign = 0;
 			}
 			else if (antisex_deceleration_sign == 1)
 			{
-				if (acceleration < antisex_acceleration_before_reduce)
+				if (acceleration < antisex_acceleration_before_reduce || antisex_is_unwinding_within_hall_speed(cur_tac))
 					final_step = true; //antisex_deceleration_sign = 0;
 			}
 			antisex_acceleration_before_reduce = acceleration;
 
 			// Revert sign if final step
-			if (final_step)
+			if (final_step && use_final_step)
 				antisex_deceleration_sign *= -1;
 
 			antisex_amps = antisex_deceleration_sign * (config.antisex_reduce_amps + antisex_reduce_step * config.antisex_reduce_amps_per_step);
@@ -2966,13 +3005,6 @@ static void terminal_set_state(int argc, const char **argv)
 		commands_printf("%s: -- 'set %s' not implemented",
 						state_str(state), argv[1]);
 	}
-}
-
-static void terminal_uart(int argc, const char **argv)
-{
-	(void)argc;
-	(void)argv;
-	app_uartcomm_start();
 }
 
 #ifdef DEBUG_SMOOTH_MOTOR
