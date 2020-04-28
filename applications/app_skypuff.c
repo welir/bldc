@@ -43,7 +43,7 @@
 // Uncomment to enable debugging terminal prints
 //#define DEBUG_SMOOTH_MOTOR
 // Send experiment graphs to Vesc Tool - Realtime Data - Experiment
-//#define DEBUG_ANTISEX
+#define DEBUG_ANTISEX
 //#define DEBUG_ANTISEX_INTEGRAL
 //#define VERBOSE_TERMINAL
 
@@ -251,6 +251,7 @@ static const skypuff_config min_config = {
 	.antisex_reduce_steps = 0,
 	.antisex_reduce_amps_per_step = 0,
 	.antisex_unwinding_gain = 0.8,
+	.antisex_gain_speed = -30000,
 };
 
 static const skypuff_config max_config = {
@@ -283,7 +284,9 @@ static const skypuff_config max_config = {
 	.antisex_reduce_amps = 40,			  // Too much can cause strong braking with current spikes
 	.antisex_reduce_steps = 10,
 	.antisex_reduce_amps_per_step = 10, // Be carefull with high amps per step and many steps
-	.antisex_unwinding_gain = 1.2};
+	.antisex_unwinding_gain = 1.2,
+	.antisex_gain_speed = 30000,
+};
 
 // Convert units
 inline static float meters_per_rev(void)
@@ -823,7 +826,9 @@ static bool is_config_out_of_limits(const skypuff_config *conf)
 		   is_int_out_of_limits("antisex_reduce_steps", "steps", conf->antisex_reduce_steps,
 								min_config.antisex_reduce_steps, max_config.antisex_reduce_steps) ||
 		   is_float_out_of_limits("antisex_unwinding_gain", "", conf->antisex_unwinding_gain,
-								  min_config.antisex_unwinding_gain, max_config.antisex_unwinding_gain);
+								  min_config.antisex_unwinding_gain, max_config.antisex_unwinding_gain) ||
+		   is_speed_out_of_limits("antisex_gain_speed", conf->antisex_gain_speed,
+								  min_config.antisex_gain_speed, max_config.antisex_gain_speed);
 }
 
 // EEPROM
@@ -1134,6 +1139,7 @@ static void set_example_conf(skypuff_config *cfg)
 	cfg->antisex_reduce_steps = 2;
 	cfg->antisex_reduce_amps_per_step = 3;
 	cfg->antisex_unwinding_gain = 1.2;
+	cfg->antisex_gain_speed = 500;
 }
 
 // Serialization/deserialization functions
@@ -1199,11 +1205,12 @@ inline static void serialize_config(uint8_t *buffer, int32_t *ind)
 	buffer_append_int32(buffer, config.antisex_reduce_steps, ind);
 	buffer_append_float32_auto(buffer, config.antisex_reduce_amps_per_step, ind);
 	buffer_append_float16(buffer, config.antisex_unwinding_gain, 1e2, ind);
+	buffer_append_float16(buffer, config.antisex_gain_speed, 1, ind);
 }
 
 inline static bool deserialize_config(unsigned char *data, unsigned int len, skypuff_config *to, int32_t *ind)
 {
-	const int32_t serialized_settings_v1_length = 4 * 29 - 2 + 2;
+	const int32_t serialized_settings_v1_length = 4 * 30 - 2;
 
 	int available_bytes = len - *ind;
 	if (available_bytes < serialized_settings_v1_length)
@@ -1248,6 +1255,7 @@ inline static bool deserialize_config(unsigned char *data, unsigned int len, sky
 	to->antisex_reduce_steps = buffer_get_int32(data, ind);
 	to->antisex_reduce_amps_per_step = buffer_get_float32_auto(data, ind);
 	to->antisex_unwinding_gain = buffer_get_float16(data, 1e2, ind);
+	to->antisex_gain_speed = buffer_get_float16(data, 1, ind);
 
 	return true;
 }
@@ -2654,14 +2662,14 @@ static inline void antisex_step(const int cur_tac)
 {
 	UTILS_LP_FAST(antisex_erpm_filtered, mc_interface_get_rpm(), antisex_erpm_filtering_k);
 
-	// Calculate current direction
+	// Recalculate antisex_amps_gain
 	float antisex_amps_gain_current;
 	if (cur_tac <= 0)
-		if (antisex_erpm_filtered < 0)
+		if (antisex_erpm_filtered < -config.antisex_gain_speed)
 			antisex_amps_gain_current = config.antisex_unwinding_gain;
 		else
 			antisex_amps_gain_current = 1;
-	else if (antisex_erpm_filtered > 0)
+	else if (antisex_erpm_filtered > config.antisex_gain_speed)
 		antisex_amps_gain_current = config.antisex_unwinding_gain;
 	else
 		antisex_amps_gain_current = 1;
