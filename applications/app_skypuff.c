@@ -43,7 +43,7 @@
 // Uncomment to enable debugging terminal prints
 //#define DEBUG_SMOOTH_MOTOR
 // Send experiment graphs to Vesc Tool - Realtime Data - Experiment
-#define DEBUG_ANTISEX
+//#define DEBUG_ANTISEX
 //#define DEBUG_ANTISEX_INTEGRAL
 //#define VERBOSE_TERMINAL
 
