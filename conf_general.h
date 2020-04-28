@@ -22,9 +22,9 @@
 
 // Firmware version
 #define FW_VERSION_MAJOR			5
-#define FW_VERSION_MINOR			00
+#define FW_VERSION_MINOR			01
 // Set to 0 for building a release and iterate during beta test builds
-#define FW_TEST_VERSION_NUMBER		7
+#define FW_TEST_VERSION_NUMBER		0
 
 #include "datatypes.h"
 
@@ -71,6 +71,7 @@
 
 // Mark3 version of HW60 with power switch and separate NRF UART.
 //#define HW60_IS_MK3
+#define HW60_IS_MK4
 
 #define HW_SOURCE "hw_60.c"
 #define HW_HEADER "hw_60.h"
