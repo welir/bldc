@@ -45,6 +45,7 @@
 // Send experiment graphs to Vesc Tool - Realtime Data - Experiment
 //#define DEBUG_ANTISEX
 //#define DEBUG_ANTISEX_INTEGRAL
+//#define DEBUG_ANTISEX_BORDERS
 //#define VERBOSE_TERMINAL
 
 #include "app_skypuff.h"
@@ -896,6 +897,24 @@ inline static void send_force_is_set(void)
 	commands_send_app_data(buffer, ind);
 }
 
+// Used to debug antisex first time
+inline static void send_custom_msg(const char *msg)
+{
+	const int max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
+	uint8_t buffer[max_buf_size];
+	int32_t ind = 0;
+
+	buffer[ind++] = SK_COMM_MSG;
+	int msg_len = strlen(msg);
+	if (max_buf_size - 1 >= msg_len)
+	{
+		memcpy(buffer + ind, msg, msg_len);
+		ind += msg_len;
+	}
+
+	commands_send_app_data(buffer, ind);
+}
+
 inline static void send_command_only(skypuff_custom_app_data_command c)
 {
 	const int max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
@@ -1134,7 +1153,7 @@ static void set_example_conf(skypuff_config *cfg)
 	cfg->takeoff_period = 5 * 1000;
 
 	// Antisex
-	cfg->antisex_starting_integral = 20000;
+	cfg->antisex_starting_integral = 2000;
 	cfg->antisex_reduce_amps = 16;
 	cfg->antisex_reduce_steps = 2;
 	cfg->antisex_reduce_amps_per_step = 3;
@@ -2194,6 +2213,8 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 	}
 }
 
+static void antisex_send_border(const bool is_braking, const float speed);
+
 inline static void print_conf(const int cur_tac)
 {
 	float erpm;
@@ -2658,6 +2679,14 @@ static inline bool antisex_is_unwinding_within_hall_speed(const int cur_tac)
 	return false;
 }
 
+static inline void antisex_send_border(const bool is_braking, const float speed)
+{
+	static char msg_buf[256];
+
+	snprintf(msg_buf, 256, "%s %.1fms", is_braking ? "Braking" : "Accel", (double)erpm_to_ms(speed));
+	send_custom_msg(msg_buf);
+}
+
 static inline void antisex_step(const int cur_tac)
 {
 	UTILS_LP_FAST(antisex_erpm_filtered, mc_interface_get_rpm(), antisex_erpm_filtering_k);
@@ -2706,6 +2735,9 @@ static inline void antisex_step(const int cur_tac)
 				antisex_reduce_step = 0;
 				antisex_measure_step = antisex_measure_steps; // Apply on first step
 				use_final_step = true;
+#ifdef DEBUG_ANTISEX_BORDERS
+				antisex_send_border(true, antisex_erpm_filtered);
+#endif
 			}
 			else if (antisex_acceleration_integral < -config.antisex_starting_integral)
 			{
@@ -2714,6 +2746,9 @@ static inline void antisex_step(const int cur_tac)
 				antisex_reduce_step = 0;
 				antisex_measure_step = antisex_measure_steps; // Apply on first step
 				use_final_step = false;
+#ifdef DEBUG_ANTISEX_BORDERS
+				antisex_send_border(false, antisex_erpm_filtered);
+#endif
 			}
 		}
 		else // cur_tac is above zero
@@ -2725,6 +2760,9 @@ static inline void antisex_step(const int cur_tac)
 				antisex_reduce_step = 0;
 				antisex_measure_step = antisex_measure_steps; // Apply on first step
 				use_final_step = true;
+#ifdef DEBUG_ANTISEX_BORDERS
+				antisex_send_border(true, antisex_erpm_filtered);
+#endif
 			}
 			else if (antisex_acceleration_integral > config.antisex_starting_integral)
 			{
@@ -2733,6 +2771,9 @@ static inline void antisex_step(const int cur_tac)
 				antisex_reduce_step = 0;
 				antisex_measure_step = antisex_measure_steps; // Apply on first step
 				use_final_step = false;
+#ifdef DEBUG_ANTISEX_BORDERS
+				antisex_send_border(false, antisex_erpm_filtered);
+#endif
 			}
 		}
 
