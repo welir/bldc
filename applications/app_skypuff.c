@@ -253,6 +253,7 @@ static const skypuff_config min_config = {
 	.antisex_reduce_amps_per_step = 0,
 	.antisex_unwinding_gain = 0.8,
 	.antisex_gain_speed = -30000,
+	.max_speed_ms = 5,
 };
 
 static const skypuff_config max_config = {
@@ -287,6 +288,7 @@ static const skypuff_config max_config = {
 	.antisex_reduce_amps_per_step = 10, // Be carefull with high amps per step and many steps
 	.antisex_unwinding_gain = 1.2,
 	.antisex_gain_speed = 30000,
+	.max_speed_ms = 300,
 };
 
 // Convert units
@@ -829,7 +831,9 @@ static bool is_config_out_of_limits(const skypuff_config *conf)
 		   is_float_out_of_limits("antisex_unwinding_gain", "", conf->antisex_unwinding_gain,
 								  min_config.antisex_unwinding_gain, max_config.antisex_unwinding_gain) ||
 		   is_speed_out_of_limits("antisex_gain_speed", conf->antisex_gain_speed,
-								  min_config.antisex_gain_speed, max_config.antisex_gain_speed);
+								  min_config.antisex_gain_speed, max_config.antisex_gain_speed) ||
+		   is_float_out_of_limits("max_speed_ms", "ms", conf->max_speed_ms,
+								  min_config.max_speed_ms, max_config.max_speed_ms);
 }
 
 // EEPROM
@@ -1159,6 +1163,19 @@ static void set_example_conf(skypuff_config *cfg)
 	cfg->antisex_reduce_amps_per_step = 3;
 	cfg->antisex_unwinding_gain = 1.2;
 	cfg->antisex_gain_speed = 500;
+
+	// Speed scale limit
+	cfg->max_speed_ms = 20;
+}
+
+static void set_example_drive(skypuff_drive *drv)
+{
+	drv->motor_poles = 14;
+	drv->wheel_diameter = 0.05;
+	drv->gear_ratio = 1;
+
+	drv->battery_type = 255; // Do not change voltage limits
+	drv->battery_cells = mc_conf->si_battery_cells;
 }
 
 // Serialization/deserialization functions
@@ -1167,11 +1184,13 @@ inline static void serialize_drive(uint8_t *buffer, int32_t *ind)
 	buffer[(*ind)++] = (uint8_t)mc_conf->si_motor_poles;
 	buffer_append_float32_auto(buffer, mc_conf->si_gear_ratio, ind);
 	buffer_append_float32_auto(buffer, mc_conf->si_wheel_diameter, ind);
+	buffer[(*ind)++] = (uint8_t)mc_conf->si_battery_type;
+	buffer[(*ind)++] = (uint8_t)mc_conf->si_battery_cells;
 }
 
 inline static bool deserialize_drive(unsigned char *data, unsigned int len, skypuff_drive *to, int32_t *ind)
 {
-	const int32_t serialized_drive_v1_length = 1 + 4 * 2;
+	const int32_t serialized_drive_v1_length = 1 + 4 * 2 + 2;
 
 	int available_bytes = len - *ind;
 	if (available_bytes < serialized_drive_v1_length)
@@ -1184,6 +1203,8 @@ inline static bool deserialize_drive(unsigned char *data, unsigned int len, skyp
 	to->motor_poles = data[(*ind)++];
 	to->gear_ratio = buffer_get_float32_auto(data, ind);
 	to->wheel_diameter = buffer_get_float32_auto(data, ind);
+	to->battery_type = data[(*ind)++];
+	to->battery_cells = data[(*ind)++];
 	return true;
 }
 
@@ -1225,11 +1246,13 @@ inline static void serialize_config(uint8_t *buffer, int32_t *ind)
 	buffer_append_float32_auto(buffer, config.antisex_reduce_amps_per_step, ind);
 	buffer_append_float16(buffer, config.antisex_unwinding_gain, 1e2, ind);
 	buffer_append_float16(buffer, config.antisex_gain_speed, 1, ind);
+
+	buffer_append_float16(buffer, config.max_speed_ms, 1e2, ind);
 }
 
 inline static bool deserialize_config(unsigned char *data, unsigned int len, skypuff_config *to, int32_t *ind)
 {
-	const int32_t serialized_settings_v1_length = 4 * 30 - 2;
+	const int32_t serialized_settings_v1_length = 4 * 30;
 
 	int available_bytes = len - *ind;
 	if (available_bytes < serialized_settings_v1_length)
@@ -1275,6 +1298,8 @@ inline static bool deserialize_config(unsigned char *data, unsigned int len, sky
 	to->antisex_reduce_amps_per_step = buffer_get_float32_auto(data, ind);
 	to->antisex_unwinding_gain = buffer_get_float16(data, 1e2, ind);
 	to->antisex_gain_speed = buffer_get_float16(data, 1, ind);
+
+	to->max_speed_ms = buffer_get_float16(data, 1e2, ind);
 
 	return true;
 }
@@ -1339,9 +1364,6 @@ inline static void serialize_scales(uint8_t *buffer, int32_t *ind)
 	// battery voltage
 	buffer_append_float32(buffer, fmax(mc_conf->l_min_vin, mc_conf->l_battery_cut_start), 1e2, ind);
 	buffer_append_float32(buffer, mc_conf->l_max_vin, 1e2, ind);
-
-	buffer[(*ind)++] = mc_conf->si_battery_cells;
-	buffer[(*ind)++] = mc_conf->si_battery_type;
 }
 
 inline static bool deserialize_alive(unsigned char *data, unsigned int len, int32_t *ind)
@@ -1537,6 +1559,8 @@ void app_custom_start(void)
 	set_drive.motor_poles = mc_conf->si_motor_poles;
 	set_drive.gear_ratio = mc_conf->si_gear_ratio;
 	set_drive.wheel_diameter = mc_conf->si_wheel_diameter;
+	set_drive.battery_type = mc_conf->si_battery_type;
+	set_drive.battery_cells = mc_conf->si_battery_cells;
 
 	state = is_drive_config_out_of_limits(&set_drive) || is_config_out_of_limits(&config) ? UNINITIALIZED : BRAKING;
 
@@ -2544,13 +2568,38 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 			// mc_configuration changed?
 			if (set_drive.motor_poles != mc_conf->si_motor_poles ||
 				set_drive.gear_ratio != mc_conf->si_gear_ratio ||
-				set_drive.wheel_diameter != mc_conf->si_wheel_diameter)
+				set_drive.wheel_diameter != mc_conf->si_wheel_diameter ||
+				set_drive.battery_type != mc_conf->si_battery_type ||
+				set_drive.battery_cells != mc_conf->si_battery_cells)
 			{
 				mc_configuration new_mc_conf = *mc_conf;
 
 				new_mc_conf.si_motor_poles = set_drive.motor_poles;
 				new_mc_conf.si_gear_ratio = set_drive.gear_ratio;
 				new_mc_conf.si_wheel_diameter = set_drive.wheel_diameter;
+
+				// Update voltage limits according to battery type and cells
+				switch (set_drive.battery_type)
+				{
+				case BATTERY_TYPE_LIION_3_0__4_2:
+					new_mc_conf.l_battery_cut_start = 3.1 * (float)set_drive.battery_cells;
+					new_mc_conf.l_battery_cut_end = 3.0 * (float)set_drive.battery_cells;
+					new_mc_conf.l_max_vin = 4.25 * (float)set_drive.battery_cells;
+					new_mc_conf.si_battery_type = set_drive.battery_type;
+					new_mc_conf.si_battery_cells = set_drive.battery_cells;
+					break;
+				case BATTERY_TYPE_LIIRON_2_6__3_6:
+					new_mc_conf.l_battery_cut_start = 2.7 * (float)set_drive.battery_cells;
+					new_mc_conf.l_battery_cut_end = 2.6 * (float)set_drive.battery_cells;
+					new_mc_conf.l_max_vin = 3.65 * (float)set_drive.battery_cells;
+					new_mc_conf.si_battery_type = set_drive.battery_type;
+					new_mc_conf.si_battery_cells = set_drive.battery_cells;
+					break;
+
+				default:
+					// Do not touch battery if we do not know the type
+					break;
+				}
 
 				// TODO: move this code into separate function and use from commands.c
 				conf_general_store_mc_configuration(&new_mc_conf, false);
@@ -2959,6 +3008,7 @@ static void terminal_set_example_conf(int argc, const char **argv)
 	(void)argc;
 	(void)argv;
 
+	set_example_drive(&set_drive);
 	set_example_conf(&set_config);
 	terminal_command = SET_CONF;
 }
