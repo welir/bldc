@@ -1311,11 +1311,6 @@ inline static void get_stats(float *erpm, float *motor_amps, float *battery_amps
 	*battery_amps = mc_interface_read_reset_avg_input_current();
 }
 
-inline float get_battery_temp(void)
-{
-	return -250; // Not implemented yet
-}
-
 inline static void serialize_power_stats(uint8_t *buffer, int32_t *ind, const int cur_tac)
 {
 	float erpm;
@@ -1335,16 +1330,10 @@ inline static void serialize_temp_stats(uint8_t *buffer, int32_t *ind)
 {
 	float fets_temp = mc_interface_temp_fet_filtered();
 	float motor_temp = mc_interface_temp_motor_filtered();
-	float bat_temp = get_battery_temp();
-	float wh_in = mc_interface_get_watt_hours(false);
-	float wh_out = mc_interface_get_watt_hours_charged(false);
 
 	buffer_append_float16(buffer, v_in_filtered, 1e1, ind);
 	buffer_append_float16(buffer, fets_temp, 1e1, ind);
 	buffer_append_float16(buffer, motor_temp, 1e1, ind);
-	buffer_append_float16(buffer, bat_temp, 1e1, ind);
-	buffer_append_float32(buffer, wh_in, 1e3, ind);
-	buffer_append_float32(buffer, wh_out, 1e3, ind);
 }
 
 inline static void serialize_scales(uint8_t *buffer, int32_t *ind)
@@ -1757,13 +1746,15 @@ inline static void brake_or_manual_brake(const int cur_tac, const int abs_tac)
 		manual_brake(cur_tac);
 }
 
-inline static bool unwinded_to_opposite_braking_zone(const int cur_tac, const float cur_erpm)
+inline static bool is_unwinded_to_opposite_braking_zone(const int cur_tac, const float cur_erpm)
 {
 	if ((cur_erpm > 0 && cur_tac >= config.braking_length) ||
 		(cur_erpm < 0 && cur_tac <= -config.braking_length))
 	{
 		send_command_only(SK_COMM_UNWINDED_TO_OPPOSITE);
+#ifdef VERBOSE_TERMINAL
 		commands_printf("%s: -- Unwinded to opposite braking zone", state_str(state));
+#endif
 		return true;
 	}
 
@@ -1973,7 +1964,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		}
 
 		// Slowly rewinded more then opposite side of braking  zone?
-		if (unwinded_to_opposite_braking_zone(cur_tac, cur_erpm))
+		if (is_unwinded_to_opposite_braking_zone(cur_tac, cur_erpm))
 		{
 			braking(cur_tac);
 			break;
@@ -2083,7 +2074,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 		}
 
 		// Slowly rewinded more then opposite side of braking zone?
-		if (unwinded_to_opposite_braking_zone(cur_tac, cur_erpm))
+		if (is_unwinded_to_opposite_braking_zone(cur_tac, cur_erpm))
 		{
 			braking(cur_tac);
 			break;
