@@ -59,7 +59,17 @@
 
 	Skypuff can't use VESC timeout because of smooth pull release mechanism.
 
-	Terminal output format is unified to simplify UI side parsing.
+	From 1 March 2020 Skypuff UI use binary protocol only. I tried to minimize packet sizes due to slow radio links.
+
+	From 6 November 2020 protocol will be changed to request -> reply scheme
+	due to half-duplex nature of the radio links.
+
+	Asynchronous events will be queued to the buffer and sent with reply only.
+
+	All terminal output will be moved under VERBOSE_TERMINAL define. 
+	Only critical logic/hardware errors will be printed to terminal imediatelly.
+
+	In the past, terminal output format was unified to simplify UI side parsing.
 
 	Each print consist of current state and comma delimeted messages.
 
@@ -76,8 +86,6 @@
 		BRAKING: pos 0.00m (0 steps), speed: -0.0ms (-0 ERPM), braking 1.0Kg (7.0A)
 
 	On double '--' UI will show message dialog with first payload as title and second as text.
-
-	From 1 march 2020 Skypuff UI use binary protocol only. I tried to minimize packet sizes due to slow radio links.
 */
 
 const int short_print_delay = 500; // 0.5s, measured in control loop counts
