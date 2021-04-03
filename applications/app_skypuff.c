@@ -195,7 +195,8 @@ static volatile skypuff_terminal_command terminal_command;
 typedef struct
 {
 	smooth_motor_mode mode;
-	union {
+	union
+	{
 		float current;
 		float erpm;
 	} param;
@@ -239,24 +240,26 @@ static const skypuff_config min_config = {
 	.slow_erpm = 100,
 	.rewinding_trigger_length = 10,
 	.unwinding_trigger_length = 3,
-	.pull_current = 1,
+	.pull_current = 0.5,
 	.pre_pull_k = 0.1,
 	.takeoff_pull_k = 0.3,
 	.fast_pull_k = 1.05,
 	.takeoff_trigger_length = 3,
 	.pre_pull_timeout = 100, // 0.1 secs
 	.takeoff_period = 100,
-	.brake_current = 1,
+	.brake_current = 0.5,
 	.slowing_current = 0,
-	.manual_brake_current = 1,
-	.unwinding_current = 1,
-	.rewinding_current = 1,
-	.slow_max_current = 1,
-	.manual_slow_max_current = 1,
-	.manual_slow_speed_up_current = 1,
+	.manual_brake_current = 0.5,
+	.unwinding_current = 0.5,
+	.unwinding_strong_current = 0.6,
+	.unwinding_strong_erpm = -50000,
+	.rewinding_current = 0.5,
+	.slow_max_current = 0.5,
+	.manual_slow_max_current = 0.5,
+	.manual_slow_speed_up_current = 0.5,
 	.manual_slow_erpm = 100,
 	.antisex_starting_integral = 1000,
-	.antisex_reduce_amps = 1,
+	.antisex_reduce_amps = 0.2,
 	.antisex_reduce_steps = 0,
 	.antisex_reduce_amps_per_step = 0,
 	.antisex_unwinding_gain = 0.8,
@@ -285,6 +288,8 @@ static const skypuff_config max_config = {
 	.slowing_current = 30,		// Do not brake hardly on high unwinding speeds
 	.manual_brake_current = 30, // Do not kill pilot in passive winch mode
 	.unwinding_current = 50,
+	.unwinding_strong_current = 50,
+	.unwinding_strong_erpm = 50000,
 	.rewinding_current = 100,
 	.slow_max_current = 50,
 	.manual_slow_max_current = 50,
@@ -800,6 +805,8 @@ static bool is_config_out_of_limits(const skypuff_config *conf)
 								  min_config.slow_erpm, max_config.slow_erpm) ||
 		   is_speed_out_of_limits("manual_slow_erpm", conf->manual_slow_erpm,
 								  min_config.manual_slow_erpm, max_config.manual_slow_erpm) ||
+		   is_speed_out_of_limits("unwinding_strong_erpm", conf->unwinding_strong_erpm,
+								  min_config.unwinding_strong_erpm, max_config.unwinding_strong_erpm) ||
 		   is_pull_out_of_limits("pull_current", conf->pull_current,
 								 min_config.pull_current, max_config.pull_current) ||
 		   is_pull_out_of_limits("brake_current", conf->brake_current,
@@ -810,6 +817,8 @@ static bool is_config_out_of_limits(const skypuff_config *conf)
 								 min_config.manual_brake_current, max_config.manual_brake_current) ||
 		   is_pull_out_of_limits("unwinding_current", conf->unwinding_current,
 								 min_config.unwinding_current, max_config.unwinding_current) ||
+		   is_pull_out_of_limits("unwinding_strong_current", conf->unwinding_strong_current,
+								 min_config.unwinding_strong_current, max_config.unwinding_strong_current) ||
 		   is_pull_out_of_limits("rewinding_current", conf->rewinding_current,
 								 conf->unwinding_current, max_config.rewinding_current) ||
 		   is_pull_out_of_limits("slow_max_current", conf->slow_max_current,
@@ -1142,14 +1151,16 @@ static void set_example_conf(skypuff_config *cfg)
 	// Slow speeds
 	cfg->slow_erpm = ms_to_erpm(1);
 	cfg->manual_slow_erpm = ms_to_erpm(2);
+	cfg->unwinding_strong_erpm = ms_to_erpm(-1);
 
 	// Forces
-	cfg->amps_per_kg = 7;			  // 7 Amps for 1Kg force
+	cfg->amps_per_kg = 3;			  // 7 Amps for 1Kg force
 	cfg->pull_applying_period = 1500; // 1.5 secs
 	cfg->brake_current = 0.3 * cfg->amps_per_kg;
 	cfg->slowing_current = 0.5 * cfg->amps_per_kg;
 	cfg->manual_brake_current = 1 * cfg->amps_per_kg;
 	cfg->unwinding_current = 0.4 * cfg->amps_per_kg;
+	cfg->unwinding_strong_current = 0.6 * cfg->amps_per_kg;
 	cfg->rewinding_current = 0.6 * cfg->amps_per_kg;
 	cfg->slow_max_current = 1 * cfg->amps_per_kg;
 	cfg->manual_slow_max_current = 1 * cfg->amps_per_kg;
@@ -1166,10 +1177,10 @@ static void set_example_conf(skypuff_config *cfg)
 
 	// Antisex
 	cfg->antisex_starting_integral = 2000;
-	cfg->antisex_reduce_amps = 16;
+	cfg->antisex_reduce_amps = 1;
 	cfg->antisex_reduce_steps = 2;
-	cfg->antisex_reduce_amps_per_step = 3;
-	cfg->antisex_unwinding_gain = 1.2;
+	cfg->antisex_reduce_amps_per_step = 1;
+	cfg->antisex_unwinding_gain = 1.1;
 	cfg->antisex_gain_speed = 500;
 
 	// Speed scale limit
@@ -2264,6 +2275,8 @@ inline static void print_conf(const int cur_tac)
 	commands_printf("  brake force: %.2fkg (%.1fA)", (double)(config.brake_current / config.amps_per_kg), (double)config.brake_current);
 	commands_printf("  manual brake force: %.2fkg (%.1fA)", (double)(config.manual_brake_current / config.amps_per_kg), (double)config.manual_brake_current);
 	commands_printf("  unwinding force: %.2fkg (%.1fA)", (double)(config.unwinding_current / config.amps_per_kg), (double)config.unwinding_current);
+	commands_printf("  unwinding strong force: %.2fkg (%.1fA)", (double)(config.unwinding_strong_current / config.amps_per_kg), (double)config.unwinding_strong_current);
+	commands_printf("  unwinding strong speed: %.1fms (%.0f ERPM)", (double)erpm_to_ms(config.unwinding_strong_erpm), (double)config.unwinding_strong_erpm);
 	commands_printf("  rewinding force: %.2fkg (%.1fA)", (double)(config.rewinding_current / config.amps_per_kg), (double)config.rewinding_current);
 	commands_printf("  slowing brake force: %.2fkg (%.1fA)", (double)(config.slowing_current / config.amps_per_kg), (double)config.slowing_current);
 	commands_printf("  slow speed: %.1fms (%.0f ERPM)", (double)erpm_to_ms(config.slow_erpm), (double)config.slow_erpm);
