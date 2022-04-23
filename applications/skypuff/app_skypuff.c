@@ -865,19 +865,6 @@ inline static bool is_alive(void) {
     return alive_forever || alive_until > loop_step;
 }
 
-// Send new state to UI
-inline static void send_state(const skypuff_state s)
-{
-	const int max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
-	uint8_t buffer[max_buf_size];
-	int32_t ind = 0;
-
-	buffer[ind++] = SK_COMM_STATE;
-	buffer[ind++] = s;
-
-	commands_send_app_data(buffer, ind);
-}
-
 inline static void send_pulling_too_high(const float current)
 {
 	const int max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
@@ -953,7 +940,6 @@ inline static void brake_state(const int cur_tac, const skypuff_state new_state,
 		(void)additional_msg;
 #endif
 		state = new_state;
-		send_state(state);
 	}
 
 	prev_abs_tac = abs(cur_tac);
@@ -986,7 +972,6 @@ inline static void pull_state(const int cur_tac, const float current, const skyp
 	{
 		state_start_time = loop_step;
 		state = new_state;
-		send_state(state);
 	}
 
 	prev_abs_tac = abs(cur_tac);
@@ -1079,7 +1064,6 @@ inline static void manual_slow_back_speed_up(const int cur_tac)
 inline static void slowing(const int cur_tac, const float erpm)
 {
 	state = SLOWING;
-	send_state(state);
 
 	prev_print = loop_step;
 	prev_printed_tac = cur_tac;
@@ -1103,7 +1087,6 @@ inline static void speed_state(const int cur_tac, const float cur_erpm,
 							  const float to_zero_constant_erpm, const skypuff_state new_state)
 {
 	state = new_state;
-	send_state(state);
 
 	prev_print = loop_step;
 	prev_printed_tac = cur_tac;
@@ -1255,7 +1238,7 @@ inline static void append_temp_stats(uint8_t *buffer, int32_t *ind)
 	buffer_append_float16(buffer, motor_temp, 1e1, ind);
 }
 
-inline static void increment_alive_until() {
+inline static void increment_alive_until(void) {
     alive_until = loop_step + alive_timeout_increment;
 }
 
@@ -1321,6 +1304,7 @@ inline static void send_stats(const int cur_tac, bool add_temps)
 	int32_t ind = 0;
 
 	buffer[ind++] = add_temps ? SK_COMM_TEMP_STATS : SK_COMM_POWER_STATS;
+	buffer[ind++] = state;
 
     append_power_stats(buffer, &ind, cur_tac);
 	if (add_temps)
@@ -1336,7 +1320,7 @@ inline static void send_stats(const int cur_tac, bool add_temps)
     while (1) {
         size_t next_reply_buf_message_size = get_next_reply_buf_message_size();
         if (next_reply_buf_message_size > 0 && next_reply_buf_message_size < max_buf_size - ind) {
-            uint8_t buffer_for_message[PACKET_MAX_PL_LEN - 1 - 12]; // 1 + 12 bytes is minimal stats package length
+            uint8_t buffer_for_message[PACKET_MAX_PL_LEN - 1 - 19]; // 1 + 19 bytes is maximal stats package length
             reply_buf_read_to(buffer_for_message, next_reply_buf_message_size);
             memcpy(buffer + ind, buffer_for_message, next_reply_buf_message_size);
             ind += next_reply_buf_message_size;
@@ -2282,7 +2266,8 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 			manual_brake(*cur_tac);
 			break;
 		}
-
+        increment_alive_until();
+        send_stats(*cur_tac, false);
 		break;
 	case SET_MANUAL_SLOW:
 		switch (state)
@@ -2294,7 +2279,8 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 			commands_printf("%s: -- Can't switch to MANUAL_SLOW -- Only possible from MANUAL_BRAKING", state_str(state));
 			break;
 		}
-
+        increment_alive_until();
+        send_stats(*cur_tac, false);
 		break;
 	case SET_MANUAL_SLOW_BACK:
 		switch (state)
@@ -2306,7 +2292,8 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 			commands_printf("%s: -- Can't switch to MANUAL_SLOW_BACK -- Only possible from MANUAL_BRAKING", state_str(state));
 			break;
 		}
-
+        increment_alive_until();
+        send_stats(*cur_tac, false);
 		break;
 	case SET_UNWINDING:
 		// Just warning for terminal mode
@@ -2338,7 +2325,8 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 			commands_printf("%s: -- Can't switch to UNWINDING -- Only possible from BRAKING_EXTENSION, MANUAL_BRAKING, PRE_PULL, TAKEOFF_PULL, PULL, FAST_PULL", state_str(state));
 			break;
 		}
-
+        increment_alive_until();
+        send_stats(*cur_tac, false);
 		break;
 	case SET_BRAKING_EXTENSION:
 		switch (state)
@@ -2354,6 +2342,8 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 			break;
 		}
 
+        increment_alive_until();
+        send_stats(*cur_tac, false);
 		break;
 	case SET_PULL_FORCE:
 		// We need correct config.amps_per_kg and drive settings
@@ -2418,7 +2408,8 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 			commands_printf("%s: -- Can't switch to PRE_PULL -- Only possible from BRAKING_EXTENSION, UNWINDING or REWINDING", state_str(state));
 			break;
 		}
-
+        increment_alive_until();
+        send_stats(*cur_tac, false);
 		break;
 	case SET_TAKEOFF_PULL:
 		switch (state)
@@ -2436,7 +2427,8 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 			commands_printf("%s: -- Can't switch to TAKEOFF_PULL -- Only possible from PRE_PULL", state_str(state));
 			break;
 		}
-
+        increment_alive_until();
+        send_stats(*cur_tac, false);
 		break;
 	case SET_PULL:
 		switch (state)
@@ -2456,7 +2448,8 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 		default:
 			commands_printf("%s: -- Can't switch to PULL -- Only possible from BRAKING_EXTENSION, TAKEOFF_PULL, UNWINDING or REWINDING", state_str(state));
 		}
-
+        increment_alive_until();
+        send_stats(*cur_tac, false);
 		break;
 	case SET_FAST_PULL:
 		switch (state)
@@ -2474,7 +2467,8 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 			commands_printf("%s: -- Can't switch to FAST_PULL -- Only possible from PULL", state_str(state));
 			break;
 		}
-
+        increment_alive_until();
+        send_stats(*cur_tac, false);
 		break;
 	case PRINT_CONF:
 		print_conf(*cur_tac);
