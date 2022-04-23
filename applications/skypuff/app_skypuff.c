@@ -51,7 +51,7 @@
 	Some progress here: https://www.youtube.com/watch?v=KoNegc4SzxY
 
 	To play with model winch, send terminal commands 'example_conf' 
-	and 'alive 3000000' to set long communication timeout.
+	and 'alive_forever' to disable communication timeout.
 
 	Skypuff can't use VESC timeout because of smooth pull release mechanism.
 
@@ -68,6 +68,10 @@ const int short_print_delay = 500; // 0.5s, measured in control loop counts
 const int long_print_delay = 3000;
 const int smooth_max_step_delay = 100;
 const int strong_unwinding_period = 2000; // 2 secs of strong unwinding current after entering unwinding
+/**
+ * (loop iterations count) alive_until incremented by this number when stats request comes
+ */
+const int alive_timeout_increment = 1400;
 
 const char *limits_wrn = "-- CONFIGURATION IS OUT OF LIMITS --";
 
@@ -81,7 +85,7 @@ static void terminal_move_zero(int argc, const char **argv);
 static void terminal_print_conf(int argc, const char **argv);
 static void terminal_get_conf(int argc, const char **argv); // Send serialized conf with COMM_CUSTOM_APP_DATA
 static void terminal_set_example_conf(int argc, const char **argv);
-static void terminal_alive(int argc, const char **argv);
+static void terminal_alive_forever(int argc, const char **argv);
 static void terminal_set_state(int argc, const char **argv);
 static void terminal_set_pull_force(int argc, const char **argv);
 static void terminal_adc2_tick(int argc, const char **argv);
@@ -103,10 +107,10 @@ static int prev_printed_tac;			 // Do not print the same position
 static mc_fault_code prev_printed_fault; // Do not print (send) the same fault many times
 static float v_in_filtered;				 // Average for v_in
 static float erpm_filtered;				 // For speed up states
-static int alive_until;					 // In good communication we trust until (i < alive_until)
+static int alive_until;					 // loop iteration number up to which the winch is active
+static bool alive_forever;		         // if true then alive_until doesnt make sense
 static int state_start_time;			 // Count the duration of state
 static float terminal_pull_kg;			 // Pulling force to set
-static volatile int alive_inc;			 // Communication timeout increment from terminal thread
 static int unwinding_start_step;         // loop_step when entering UNWINDING
 
 // Prevent long time oscilations
@@ -857,6 +861,10 @@ static void read_config_from_eeprom(skypuff_config *c)
 		conf_general_read_eeprom_var_custom(e + a, a);
 }
 
+inline static bool is_alive(void) {
+    return alive_forever || alive_until > loop_step;
+}
+
 // Send new state to UI
 inline static void send_state(const skypuff_state s)
 {
@@ -967,7 +975,7 @@ inline static void braking_extension(const int cur_tac)
 inline static void manual_brake(const int cur_tac)
 {
 	brake_state(cur_tac, MANUAL_BRAKING, config.manual_brake_current,
-				loop_step >= alive_until ? ", -- Communication timeout, send 'alive <period>'" : "");
+                !is_alive() ? ", -- Communication timeout, send 'alive_forever'" : "");
 }
 
 inline static void pull_state(const int cur_tac, const float current, const skypuff_state new_state,
@@ -1247,20 +1255,8 @@ inline static void append_temp_stats(uint8_t *buffer, int32_t *ind)
 	buffer_append_float16(buffer, motor_temp, 1e1, ind);
 }
 
-inline static bool deserialize_alive(unsigned char *data, unsigned int len, int32_t *ind)
-{
-	const int32_t serialized_alive_length = 2;
-
-	int available_bytes = len - *ind;
-	if (available_bytes < serialized_alive_length)
-	{
-		commands_printf("%s: -- Can't deserialize alive command -- Received %d bytes, expecting %d.",
-						state_str(state), available_bytes, serialized_alive_length);
-		return false;
-	}
-
-	alive_inc = buffer_get_uint16(data, ind);
-	return true;
+inline static void increment_alive_until() {
+    alive_until = loop_step + alive_timeout_increment;
 }
 
 inline static void send_conf(void)
@@ -1317,14 +1313,14 @@ inline static size_t get_next_reply_buf_message_size(void) {
     }
 }
 
-// Send motor mode, speed and current amps as reply to alive command
+// Send motor mode, speed and current amps as reply to stats command
 inline static void send_stats(const int cur_tac, bool add_temps)
 {
 	const int max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
 	uint8_t buffer[max_buf_size];
 	int32_t ind = 0;
 
-	buffer[ind++] = add_temps ? SK_COMM_ALIVE_TEMP_STATS : SK_COMM_ALIVE_POWER_STATS;
+	buffer[ind++] = add_temps ? SK_COMM_TEMP_STATS : SK_COMM_POWER_STATS;
 
     append_power_stats(buffer, &ind, cur_tac);
 	if (add_temps)
@@ -1340,7 +1336,7 @@ inline static void send_stats(const int cur_tac, bool add_temps)
     while (1) {
         size_t next_reply_buf_message_size = get_next_reply_buf_message_size();
         if (next_reply_buf_message_size > 0 && next_reply_buf_message_size < max_buf_size - ind) {
-            uint8_t buffer_for_message[PACKET_MAX_PL_LEN - 1 - 12]; // 1 + 12 bytes is minimal alive package length
+            uint8_t buffer_for_message[PACKET_MAX_PL_LEN - 1 - 12]; // 1 + 12 bytes is minimal stats package length
             reply_buf_read_to(buffer_for_message, next_reply_buf_message_size);
             memcpy(buffer + ind, buffer_for_message, next_reply_buf_message_size);
             ind += next_reply_buf_message_size;
@@ -1380,20 +1376,14 @@ void custom_app_data_handler(unsigned char *data, unsigned int len)
 
 	switch (command)
 	{
-	case SK_COMM_ALIVE_POWER_STATS:
-		// Set alive_inc right there
-		if (!deserialize_alive(data, len, &ind))
-			return;
-
-		terminal_command = SEND_POWER_STATS;
-		break;
-	case SK_COMM_ALIVE_TEMP_STATS:
-		// Set alive_inc right there
-		if (!deserialize_alive(data, len, &ind))
-			return;
-
-		terminal_command = SEND_TEMP_STATS;
-		break;
+    case SK_COMM_POWER_STATS:
+        increment_alive_until();
+        terminal_command = SEND_POWER_STATS;
+        break;
+    case SK_COMM_TEMP_STATS:
+        increment_alive_until();
+        terminal_command = SEND_TEMP_STATS;
+        break;
 	case SK_COMM_SETTINGS_V1:
         // Note that deserialize_scales is not called here.
         // That's because request does not contain this block.
@@ -1512,6 +1502,7 @@ void app_custom_start(void)
 	prev_printed_tac = INT_MIN / 2;
 	prev_printed_fault = FAULT_CODE_NONE;
 	alive_until = 0;
+    alive_forever = false;
 	prev_abs_tac = 0;
 	prev_erpm = 0;
 	v_in_filtered = GET_INPUT_VOLTAGE();
@@ -1558,9 +1549,9 @@ void app_custom_start(void)
 		"Set SkyPUFF model winch configuration",
 		"", terminal_set_example_conf);
 	terminal_register_command_callback(
-		"alive",
-		"Prolong SkyPUFF communication alive period",
-		"[milliseconds]", terminal_alive);
+		"alive_forever",
+		"Disable SkyPUFF communication timeout",
+		"", terminal_alive_forever);
 	terminal_register_command_callback(
 		"set",
 		"Set new SkyPUFF state: MANUAL_BRAKING, UNWINDING, MANUAL_SLOW, MANUAL_SLOW_BACK, PRE_PULL, TAKEOFF_PULL, PULL, FAST_PULL",
@@ -1601,7 +1592,7 @@ void app_custom_stop(void)
 	terminal_unregister_callback(terminal_print_conf);
 	terminal_unregister_callback(terminal_get_conf);
 	terminal_unregister_callback(terminal_set_example_conf);
-	terminal_unregister_callback(terminal_alive);
+	terminal_unregister_callback(terminal_alive_forever);
 	terminal_unregister_callback(terminal_set_state);
 	terminal_unregister_callback(terminal_set_pull_force);
 #ifdef DEBUG_SMOOTH_MOTOR
@@ -1825,7 +1816,7 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 
 #ifdef VERBOSE_TERMINAL
 		print_position_periodically(cur_tac, long_print_delay,
-									loop_step >= alive_until ? ", -- Communication timeout" : "");
+									!is_alive() ? ", -- Communication timeout" : "");
 #endif
 
 		break;
@@ -2238,7 +2229,7 @@ inline static void print_conf(const int cur_tac)
 	commands_printf("  motor state %s: %.2fkg (%.1fA), battery: %.1fA %.1fV, power: %.1fW", motor_mode_str(current_motor_state.mode), (double)(motor_amps / config.amps_per_kg), (double)motor_amps, (double)battery_amps, (double)v_in_filtered, (double)power);
 	commands_printf("  timeout reset interval: %dms", timeout_reset_interval);
 	commands_printf("  calculated force changing speed: %.2fKg/sec (%.1fA/sec)", (double)(amps_per_sec / config.amps_per_kg), (double)amps_per_sec);
-	commands_printf("  loop counter: %d, alive until: %d, %s", loop_step, alive_until, loop_step >= alive_until ? "communication timeout" : "no timeout");
+	commands_printf("  loop counter: %d, alive until: %d, %s", loop_step, alive_until, !is_alive() ? "communication timeout" : "no timeout");
 }
 
 inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
@@ -2319,9 +2310,9 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 		break;
 	case SET_UNWINDING:
 		// Just warning for terminal mode
-		if (loop_step >= alive_until)
+		if (!is_alive())
 		{
-			commands_printf("%s: -- Can't switch to UNWINDING -- Update timeout with 'alive <period>' before",
+			commands_printf("%s: -- Can't switch to UNWINDING -- alive timeout",
 							state_str(state));
 			break;
 		}
@@ -2679,16 +2670,9 @@ static THD_FUNCTION(my_thread, arg)
 	
 		int abs_tac = abs(cur_tac);
 
-		// terminal command 'alive'?
-		if (alive_inc)
-		{
-			alive_until = loop_step + alive_inc;
-			alive_inc = 0;
-		}
-
 		// Communication timeout?
 		// BRAKING or MANUAL_BRAKING possible on timeout
-		if (loop_step >= alive_until && abs_tac > config.braking_length &&
+		if (!is_alive() && abs_tac > config.braking_length &&
 			state != UNINITIALIZED && state != MANUAL_BRAKING)
 			manual_brake(cur_tac);
 
@@ -2773,23 +2757,11 @@ static void terminal_set_example_conf(int argc, const char **argv)
 	terminal_command = SET_CONF;
 }
 
-static void terminal_alive(int argc, const char **argv)
+static void terminal_alive_forever(int argc, const char **argv)
 {
-	if (argc < 2)
-	{
-		commands_printf("%s: -- Command requires one argument -- 'alive 300' will let skypuff work 300ms before timeout and MANUAL_BRAKING");
-		return;
-	}
-
-	int t = 0;
-	if (sscanf(argv[1], "%d", &t) == EOF)
-	{
-		commands_printf("%s: -- Can't parse '%s' as milliseconds value.",
-						state_str(state), argv[1]);
-		return;
-	};
-
-	alive_inc = t;
+    (void)argc;
+    (void)argv;
+    alive_forever = true;
 }
 
 static void terminal_set_pull_force(int argc, const char **argv)
@@ -3088,7 +3060,7 @@ void terminal_measure_spool(int argc, const char **argv)
 	}
 
 	// Set alive during our tests
-	alive_inc = (secs + 1) * 2000;
+    alive_until = loop_step + (secs + 1) * 2000;
 	chThdSleepMilliseconds(5);
 
 	float amps = kg * config.amps_per_kg;
