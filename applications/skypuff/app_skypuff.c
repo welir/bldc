@@ -21,9 +21,7 @@
 #include "ch.h"
 #include "hal.h"
 
-#include "comm_can.h"
 #include "commands.h"
-#include "encoder.h"
 #include "hw.h"
 #include "mc_interface.h"
 #include "terminal.h"
@@ -46,6 +44,7 @@
 
 #include "app_skypuff.h"
 #include "reply_buf.c"
+#include "skypuff_conf.h"
 
 /*
 	This application turns VESC into paragliding winch controller.
@@ -1187,7 +1186,26 @@ static void set_example_drive(skypuff_drive *drv)
 	drv->battery_cells = mc_conf->si_battery_cells;
 }
 
-// Serialization/deserialization functions
+// Serialization functions
+inline static void serialize_scales(uint8_t *buffer, int32_t *ind)
+{
+    float max_force = fabs(mc_conf->lo_current_max) > fabs(mc_conf->lo_current_min) ? fabs(mc_conf->lo_current_max) : fabs(mc_conf->lo_current_min);
+    float max_discharge = mc_conf->lo_current_max < mc_conf->lo_in_current_max ? mc_conf->lo_current_max : mc_conf->lo_in_current_max;
+    // Min (discharge) current is negative
+    float max_charge = mc_conf->lo_current_min > mc_conf->lo_in_current_min ? mc_conf->lo_current_min : mc_conf->lo_in_current_min;
+
+    // currents
+    buffer_append_float16(buffer, max_force, 1e1, ind);
+    buffer_append_float16(buffer, max_discharge, 1e1, ind);
+    buffer_append_float16(buffer, max_charge, 1e1, ind);
+    // temps
+    buffer_append_float16(buffer, mc_conf->l_temp_fet_start, 1e1, ind);
+    buffer_append_float16(buffer, mc_conf->l_temp_motor_start, 1e1, ind);
+    // battery voltage
+    buffer_append_float32(buffer, fmax(mc_conf->l_min_vin, mc_conf->l_battery_cut_start), 1e2, ind);
+    buffer_append_float32(buffer, mc_conf->l_max_vin, 1e2, ind);
+}
+
 inline static void serialize_drive(uint8_t *buffer, int32_t *ind)
 {
 	buffer[(*ind)++] = (uint8_t)mc_conf->si_motor_poles;
@@ -1195,134 +1213,6 @@ inline static void serialize_drive(uint8_t *buffer, int32_t *ind)
 	buffer_append_float32_auto(buffer, mc_conf->si_wheel_diameter, ind);
 	buffer[(*ind)++] = (uint8_t)mc_conf->si_battery_type;
 	buffer[(*ind)++] = (uint8_t)mc_conf->si_battery_cells;
-}
-
-inline static bool deserialize_drive(unsigned char *data, unsigned int len, skypuff_drive *to, int32_t *ind)
-{
-	const int32_t serialized_drive_v1_length = 1 + 4 * 2 + 2;
-
-	int available_bytes = len - *ind;
-	if (available_bytes < serialized_drive_v1_length)
-	{
-		commands_printf("%s: -- Can't deserialize drive settings -- Received %d bytes, expecting %d.",
-						state_str(state), available_bytes, serialized_drive_v1_length);
-		return false;
-	}
-
-	to->motor_poles = data[(*ind)++];
-	to->gear_ratio = buffer_get_float32_auto(data, ind);
-	to->wheel_diameter = buffer_get_float32_auto(data, ind);
-	to->battery_type = data[(*ind)++];
-	to->battery_cells = data[(*ind)++];
-	return true;
-}
-
-inline static void serialize_config(uint8_t *buffer, int32_t *ind)
-{
-	buffer_append_float16(buffer, config.amps_per_kg, 1e2, ind);
-	buffer_append_uint16(buffer, config.pull_applying_period, ind);
-	buffer_append_int32(buffer, config.rope_length, ind);
-	buffer_append_int32(buffer, config.braking_length, ind);
-	buffer_append_int32(buffer, config.braking_extension_length, ind);
-
-	buffer_append_int32(buffer, config.slowing_length, ind);
-	buffer_append_uint16(buffer, config.slow_erpm, ind);
-	buffer_append_int32(buffer, config.rewinding_trigger_length, ind);
-	buffer_append_int32(buffer, config.unwinding_trigger_length, ind);
-	buffer_append_float16(buffer, config.pull_current, 10, ind);
-
-	buffer_append_float16(buffer, config.pre_pull_k, 1e4, ind);
-	buffer_append_float16(buffer, config.takeoff_pull_k, 1e4, ind);
-	buffer_append_float16(buffer, config.fast_pull_k, 1e4, ind);
-	buffer_append_uint16(buffer, config.takeoff_trigger_length, ind);
-	buffer_append_uint16(buffer, config.pre_pull_timeout, ind);
-
-	buffer_append_uint16(buffer, config.takeoff_period, ind);
-	buffer_append_float16(buffer, config.brake_current, 10, ind);
-	buffer_append_float16(buffer, config.slowing_current, 10, ind);
-	buffer_append_float16(buffer, config.manual_brake_current, 10, ind);
-	buffer_append_float16(buffer, config.unwinding_current, 10, ind);
-
-	buffer_append_float16(buffer, config.rewinding_current, 10, ind);
-	buffer_append_float16(buffer, config.slow_max_current, 10, ind);
-	buffer_append_float16(buffer, config.manual_slow_max_current, 10, ind);
-	buffer_append_float16(buffer, config.manual_slow_speed_up_current, 10, ind);
-	buffer_append_uint16(buffer, config.manual_slow_erpm, ind);
-
-	buffer_append_float16(buffer, config.antisex_min_pull_amps, 10, ind);
-	buffer_append_float16(buffer, config.antisex_reduce_amps, 10, ind);
-	buffer_append_float16(buffer, config.antisex_acceleration_on_mss, 1e2, ind);
-	buffer_append_float16(buffer, config.antisex_acceleration_off_mss, 1e2, ind);
-	buffer_append_uint16(buffer, config.antisex_max_period_ms, ind);
-
-	buffer_append_float16(buffer, config.max_speed_ms, 1e2, ind);
-	buffer_append_uint16(buffer, config.braking_applying_period, ind);
-	buffer_append_float16(buffer, config.unwinding_strong_current, 10, ind);
-	buffer_append_int16(buffer, config.unwinding_strong_erpm, ind);
-
-}
-
-inline static bool deserialize_config(unsigned char *data, unsigned int len, skypuff_config *to, int32_t *ind)
-{
-	const int32_t serialized_settings_v1_length = 16 + 16 + 10 + 10 + 10 + 10 + 8;
-
-	int available_bytes = len - *ind;
-	if (available_bytes < serialized_settings_v1_length)
-	{
-		commands_printf("%s: -- Can't deserialize config settings -- Received %d bytes, expecting %d.",
-						state_str(state), available_bytes, serialized_settings_v1_length);
-		return false;
-	}
-
-	// 2 * 2 + 4 * 3 = 16 bytes
-	to->amps_per_kg = buffer_get_float16(data, 1e2, ind);
-	to->pull_applying_period = buffer_get_uint16(data, ind);
-	to->rope_length = buffer_get_int32(data, ind);
-	to->braking_length = buffer_get_int32(data, ind);
-	to->braking_extension_length = buffer_get_int32(data, ind);
-
-	// 4 * 3 + 2 * 2 = 16 bytes
-	to->slowing_length = buffer_get_int32(data, ind);
-	to->slow_erpm = buffer_get_uint16(data, ind);
-	to->rewinding_trigger_length = buffer_get_int32(data, ind);
-	to->unwinding_trigger_length = buffer_get_int32(data, ind);
-	to->pull_current = buffer_get_float16(data, 10, ind);
-
-	// 2 * 5 = 10 bytes
-	to->pre_pull_k = buffer_get_float16(data, 1e4, ind);
-	to->takeoff_pull_k = buffer_get_float16(data, 1e4, ind);
-	to->fast_pull_k = buffer_get_float16(data, 1e4, ind);
-	to->takeoff_trigger_length = buffer_get_uint16(data, ind); // short distance
-	to->pre_pull_timeout = buffer_get_uint16(data, ind);
-
-	// 2 * 5 = 10 bytes
-	to->takeoff_period = buffer_get_uint16(data, ind);
-	to->brake_current = buffer_get_float16(data, 10, ind);
-	to->slowing_current = buffer_get_float16(data, 10, ind);
-	to->manual_brake_current = buffer_get_float16(data, 10, ind);
-	to->unwinding_current = buffer_get_float16(data, 10, ind);
-
-	// 2 * 5 = 10 bytes
-	to->rewinding_current = buffer_get_float16(data, 10, ind);
-	to->slow_max_current = buffer_get_float16(data, 10, ind);
-	to->manual_slow_max_current = buffer_get_float16(data, 10, ind);
-	to->manual_slow_speed_up_current = buffer_get_float16(data, 10, ind);
-	to->manual_slow_erpm = buffer_get_uint16(data, ind);
-
-	// 2 * 5 = 10 bytes
-	to->antisex_min_pull_amps = buffer_get_float16(data, 10, ind);
-	to->antisex_reduce_amps = buffer_get_float16(data, 10, ind);
-	to->antisex_acceleration_on_mss = buffer_get_float16(data, 1e2, ind);
-	to->antisex_acceleration_off_mss = buffer_get_float16(data, 1e2, ind);
-	to->antisex_max_period_ms = buffer_get_uint16(data, ind);
-
-	// 2 * 4 = 8 bytes
-	to->max_speed_ms = buffer_get_float16(data, 1e2, ind);
-	to->braking_applying_period = buffer_get_uint16(data, ind);
-	to->unwinding_strong_current = buffer_get_float16(data, 10, ind);
-	to->unwinding_strong_erpm = buffer_get_int16(data, ind);
-
-	return true;
 }
 
 inline static void get_stats(float *erpm, float *motor_amps, float *battery_amps)
@@ -1357,25 +1247,6 @@ inline static void append_temp_stats(uint8_t *buffer, int32_t *ind)
 	buffer_append_float16(buffer, motor_temp, 1e1, ind);
 }
 
-inline static void serialize_scales(uint8_t *buffer, int32_t *ind)
-{
-	float max_force = fabs(mc_conf->lo_current_max) > fabs(mc_conf->lo_current_min) ? fabs(mc_conf->lo_current_max) : fabs(mc_conf->lo_current_min);
-	float max_discharge = mc_conf->lo_current_max < mc_conf->lo_in_current_max ? mc_conf->lo_current_max : mc_conf->lo_in_current_max;
-	// Min (discharge) current is negative
-	float max_charge = mc_conf->lo_current_min > mc_conf->lo_in_current_min ? mc_conf->lo_current_min : mc_conf->lo_in_current_min;
-
-	// currents
-	buffer_append_float16(buffer, max_force, 1e1, ind);
-	buffer_append_float16(buffer, max_discharge, 1e1, ind);
-	buffer_append_float16(buffer, max_charge, 1e1, ind);
-	// temps
-	buffer_append_float16(buffer, mc_conf->l_temp_fet_start, 1e1, ind);
-	buffer_append_float16(buffer, mc_conf->l_temp_motor_start, 1e1, ind);
-	// battery voltage
-	buffer_append_float32(buffer, fmax(mc_conf->l_min_vin, mc_conf->l_battery_cut_start), 1e2, ind);
-	buffer_append_float32(buffer, mc_conf->l_max_vin, 1e2, ind);
-}
-
 inline static bool deserialize_alive(unsigned char *data, unsigned int len, int32_t *ind)
 {
 	const int32_t serialized_alive_length = 2;
@@ -1404,7 +1275,7 @@ inline static void send_conf(void)
 
 	serialize_scales(buffer, &ind);
 	serialize_drive(buffer, &ind);
-	serialize_config(buffer, &ind);
+	serialize_config(buffer, &ind, &config);
 
 	if (ind > max_buf_size)
 	{
@@ -1524,6 +1395,8 @@ void custom_app_data_handler(unsigned char *data, unsigned int len)
 		terminal_command = SEND_TEMP_STATS;
 		break;
 	case SK_COMM_SETTINGS_V1:
+        // Note that deserialize_scales is not called here.
+        // That's because request does not contain this block.
 		if (!deserialize_drive(data, len, &set_drive, &ind))
 			return;
 		if (!deserialize_config(data, len, &set_config, &ind))
