@@ -43,7 +43,7 @@
 //#define VERBOSE_TERMINAL
 
 #include "app_skypuff.h"
-#include "reply_buf.c"
+#include "reply_buf.h"
 #include "skypuff_conf.h"
 
 /*
@@ -62,16 +62,16 @@
 	Only critical logic/hardware errors will be printed to terminal immediately.
 
 	From 9 October 2021 'pull in' direction should have positive current, 'pull out' negative.
+
+	From 27 April 2022 protocol changed to half duplex request->reply scheme.
+	Any command will increment alive timeout. No special command needed. Increment
+	is defined in skypuff_conf.h
 */
 
 const int short_print_delay = 500; // 0.5s, measured in control loop counts
 const int long_print_delay = 3000;
 const int smooth_max_step_delay = 100;
 const int strong_unwinding_period = 2000; // 2 secs of strong unwinding current after entering unwinding
-/**
- * (loop iterations count) alive_until incremented by this number when stats request comes
- */
-const int alive_timeout_increment = 1400;
 
 const char *limits_wrn = "-- CONFIGURATION IS OUT OF LIMITS --";
 
@@ -1319,7 +1319,7 @@ inline static void send_stats(const int cur_tac, bool add_temps)
     // copy messages from reply_buf to buffer until it`s possible
     while (1) {
         size_t next_reply_buf_message_size = get_next_reply_buf_message_size();
-        if (next_reply_buf_message_size > 0 && next_reply_buf_message_size < max_buf_size - ind) {
+        if (next_reply_buf_message_size > 0 && next_reply_buf_message_size < (size_t)(max_buf_size - ind)) {
             uint8_t buffer_for_message[PACKET_MAX_PL_LEN - 1 - 19]; // 1 + 19 bytes is maximal stats package length
             reply_buf_read_to(buffer_for_message, next_reply_buf_message_size);
             memcpy(buffer + ind, buffer_for_message, next_reply_buf_message_size);

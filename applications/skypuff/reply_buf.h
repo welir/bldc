@@ -1,9 +1,9 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #define REPLY_BUF_SIZE 512
-#define MIN(X,Y) ((X) < (Y) ? (X) : (Y))
 
 uint8_t reply_buf[REPLY_BUF_SIZE];
 uint8_t *reply_buf_head = reply_buf;
@@ -43,7 +43,7 @@ int reply_buf_read_to(uint8_t dst[], size_t count)
     if (count > reply_buf_contains)
         return 0;
 
-    size_t canBeReadTillTheEnd = MIN(reply_buf_end() - reply_buf_tail(), count);
+    size_t canBeReadTillTheEnd = MIN((size_t)(reply_buf_end() - reply_buf_tail()), count);
     memcpy(dst, reply_buf_tail(), canBeReadTillTheEnd);
 
     size_t leftToRead = count - canBeReadTillTheEnd;
@@ -65,7 +65,7 @@ int reply_buf_append_from(const uint8_t src[], size_t count)
         return 0;
 
     const uint8_t *bufend = reply_buf_end();
-    size_t canBeAppendedTillTheEnd = MIN(bufend - reply_buf_head, count);
+    size_t canBeAppendedTillTheEnd = MIN((size_t)(bufend - reply_buf_head), count);
     memcpy(reply_buf_head, src, canBeAppendedTillTheEnd);
     reply_buf_head += canBeAppendedTillTheEnd;
 

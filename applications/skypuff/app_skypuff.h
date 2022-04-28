@@ -4,17 +4,17 @@
 	This file is part of the VESC firmware.
 
 	The VESC firmware is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
+	it under the terms of the GNU General Public License as published by
+	the Free Software Foundation, either version 3 of the License, or
+	(at your option) any later version.
 
-    The VESC firmware is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
+	The VESC firmware is distributed in the hope that it will be useful,
+	but WITHOUT ANY WARRANTY; without even the implied warranty of
+	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+	GNU General Public License for more details.
 
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+	You should have received a copy of the GNU General Public License
+	along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 #ifndef APP_SKYPUFF_H_
 #define APP_SKYPUFF_H_
@@ -22,28 +22,28 @@
 #include <stdint.h>
 #include "datatypes.h"
 
-/* --- This is common file for MCU and UI SkyPUFF apps --- */
+/* --- This is common file for MCU and Skypuff UI apps --- */
 
 // Do not forget to add next settings version command on skypuff_config struct update
 // Skypuff commands with COMM_CUSTOM_APP_DATA
 typedef enum
 {
-	SK_COMM_SETTINGS_V1,		  // Receive settings on get_conf
-	SK_COMM_SETTINGS_LORA,		  // Propagate new LoRa settings between remote control units
-    SK_COMM_POWER_STATS,	      // Send power stats
-    SK_COMM_TEMP_STATS,	          // Send power and temp stats
-	SK_COMM_FAULT,				  // Send Fault code to UI
-	SK_COMM_PULLING_TOO_HIGH,	  // Messages to UI
-	SK_COMM_OUT_OF_LIMITS,		  // Will contain entire error message without zero byte
-	SK_COMM_UNWINDED_TO_OPPOSITE, // Many one byte acknowledgments
-	SK_COMM_MSG,				  // Just status message (used for debug sometimes)
-	SK_COMM_UNWINDED_FROM_SLOWING,
-	SK_COMM_DETECTING_MOTION,
-	SK_COMM_TOO_SLOW_SPEED_UP,
-	SK_COMM_ZERO_IS_SET,
-	SK_COMM_FORCE_IS_SET,
-	SK_COMM_SETTINGS_APPLIED,
-	SK_COMM_GUILLOTINE,
+	SK_COMM_SETTINGS_V1,		   // Receive settings on get_conf
+	SK_COMM_SETTINGS_LORA,		   // Propagate new LoRa settings between remote control units
+	SK_COMM_POWER_STATS,		   // Send power stats
+	SK_COMM_TEMP_STATS,			   // Send power and temp stats
+	SK_COMM_FAULT,				   // Send Fault code to UI
+	SK_COMM_PULLING_TOO_HIGH,	   // Messages to UI
+	SK_COMM_OUT_OF_LIMITS,		   // Will contain entire error message without zero byte
+	SK_COMM_UNWINDED_TO_OPPOSITE,  // Many one byte acknowledgments
+	SK_COMM_MSG,				   // Just status message (used for debug sometimes)
+	SK_COMM_UNWINDED_FROM_SLOWING, // Information about leaving braking + slowing zone
+	SK_COMM_DETECTING_MOTION,	   // Information in Pre Pull that we are wating for movement
+	SK_COMM_TOO_SLOW_SPEED_UP,     // Information in constant speed modes, that acceleration is too slow
+	SK_COMM_ZERO_IS_SET,           // Information that zero is set
+	SK_COMM_FORCE_IS_SET,          // Information that new nominal pull force is set
+	SK_COMM_SETTINGS_APPLIED,      // Information that new settings applied
+	SK_COMM_GUILLOTINE,            // Cut the rope command
 } skypuff_custom_app_data_command;
 
 // Winch FSM
@@ -65,8 +65,8 @@ typedef enum
 	MANUAL_SLOW,			   // Constant speed mode with positive current
 	MANUAL_SLOW_BACK_SPEED_UP, // Speed up until manual constant speed with negative current
 	MANUAL_SLOW_BACK,		   // Constant speed mode with negative current
-	MANUAL_DEBUG_SMOOTH,       // Debug smooth motor movements with 'smooth' terminal commands
-	DISCONNECTED,              // UI only state
+	MANUAL_DEBUG_SMOOTH,	   // Debug smooth motor movements with 'smooth' terminal commands
+	DISCONNECTED,			   // UI only state
 } skypuff_state;
 
 /*
@@ -144,10 +144,10 @@ inline const char *sk_command_str(const skypuff_custom_app_data_command c)
 		return "SK_COMM_SETTINGS_V1";
 	case SK_COMM_SETTINGS_LORA:
 		return "SK_COMM_SETTINGS_LORA";
-    case SK_COMM_POWER_STATS:
-        return "SK_COMM_POWER_STATS";
-    case SK_COMM_TEMP_STATS:
-        return "SK_COMM_TEMP_STATS";
+	case SK_COMM_POWER_STATS:
+		return "SK_COMM_POWER_STATS";
+	case SK_COMM_TEMP_STATS:
+		return "SK_COMM_TEMP_STATS";
 	case SK_COMM_FAULT:
 		return "SK_COMM_FAULT";
 	case SK_COMM_PULLING_TOO_HIGH:
