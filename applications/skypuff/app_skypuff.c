@@ -81,22 +81,14 @@ static THD_WORKING_AREA(my_thread_wa, 2048);
 
 // Private functions
 static void terminal_set_zero(int argc, const char **argv);
-
 static void terminal_move_zero(int argc, const char **argv);
-
 static void terminal_print_conf(int argc, const char **argv);
-
 static void terminal_get_conf(int argc, const char **argv); // Send serialized conf with COMM_CUSTOM_APP_DATA
 static void terminal_set_example_conf(int argc, const char **argv);
-
 static void terminal_alive_forever(int argc, const char **argv);
-
 static void terminal_set_state(int argc, const char **argv);
-
 static void terminal_set_pull_force(int argc, const char **argv);
-
 static void terminal_adc2_tick(int argc, const char **argv);
-
 static void terminal_measure_spool(int argc, const char **argv);
 
 #ifdef DEBUG_SMOOTH_MOTOR
@@ -294,8 +286,7 @@ static const skypuff_config max_config = {
 		.max_speed_ms = 300,
 };
 
-inline void append_to_reply_buf(const uint8_t *src, size_t count)
-{
+inline static void append_to_reply_buf(const uint8_t *src, size_t count) {
 	if (reply_buf_len + count > REPLY_BUF_SIZE) {
 		commands_printf("-- ALARMA!!! -- reply buffer capacity exceeded");
 		return;
