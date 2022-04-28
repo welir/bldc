@@ -134,8 +134,8 @@ static systime_t measurement_delay = MS2ST(5); // Measure speed based on tachome
 static float measurement_speed_filter_period_secs =
 		(float) 50.0 / (float) 1000.0; // Period of tachometer speed measurements to overage
 
-#define REPLY_BUF_SIZE 300
-uint8_t reply_buf[REPLY_BUF_SIZE];
+#define REPLY_BUF_SIZE 300 // this size must be less than
+uint8_t reply_buf[REPLY_BUF_SIZE]; // this buffer collects messages to be appended to the next stats response
 size_t reply_buf_len = 0;
 
 // Store tachometer based speed measurements here
@@ -222,11 +222,11 @@ static const skypuff_drive max_drive_limits = {
 // Check them on UI side
 static const skypuff_config min_config = {
 		.amps_per_kg = 0.5,
-		.pull_applying_period = 1, // 0.001 secs
-		.braking_applying_period = 1, // 0.001 secs
+		.pull_applying_period = 1,			// 0.001 secs
+		.braking_applying_period = 1,		// 0.001 secs
 		.rope_length = 5,
 		.braking_length = 5,
-		.braking_extension_length = 3, // To create trigger length after unwinding
+		.braking_extension_length = 3,		// To create trigger length after unwinding
 		.slowing_length = 3,
 		.slow_erpm = 100,
 		.rewinding_trigger_length = 10,
@@ -236,7 +236,7 @@ static const skypuff_config min_config = {
 		.takeoff_pull_k = 0.3,
 		.fast_pull_k = 1.05,
 		.takeoff_trigger_length = 3,
-		.pre_pull_timeout = 100, // 0.1 secs
+		.pre_pull_timeout = 100,			// 0.1 secs
 		.takeoff_period = 100,
 		.brake_current = 0.5,
 		.slowing_current = 0,
@@ -259,25 +259,25 @@ static const skypuff_config min_config = {
 
 static const skypuff_config max_config = {
 		.amps_per_kg = 30,
-		.pull_applying_period = 10000,   // 10 secs
-		.braking_applying_period = 2000, // 2 secs
-		.rope_length = 5000 * 120,         // 120 - maximum motor poles * 3
+		.pull_applying_period = 10000,			// 10 secs
+		.braking_applying_period = 2000,		// 2 secs
+		.rope_length = 5000 * 120,				// 120 - maximum motor poles * 3
 		.braking_length = 100 * 120,
 		.braking_extension_length = 5000 * 120,
 		.slowing_length = 100 * 120,
 		.slow_erpm = 30000,
-		.rewinding_trigger_length = 5000 * 120, // Could be disabled with large trigger
+		.rewinding_trigger_length = 5000 * 120,	// Could be disabled with large trigger
 		.unwinding_trigger_length = 10 * 120,
-		.pull_current = 600, // Believe in gliders
+		.pull_current = 600,					// Believe in gliders
 		.pre_pull_k = 0.5,
 		.takeoff_pull_k = 0.8,
 		.fast_pull_k = 1.5,
 		.takeoff_trigger_length = 5000 * 120,
-		.pre_pull_timeout = 5000,    // 5 secs
-		.takeoff_period = 60000,    // 1 min
-		.brake_current = 500,        // Charge battery mode possible
-		.slowing_current = 30,        // Do not brake hardly on high unwinding speeds
-		.manual_brake_current = 30, // Do not kill pilot in passive winch mode
+		.pre_pull_timeout = 5000,				// 5 secs
+		.takeoff_period = 60000,				// 1 min
+		.brake_current = 500,					// Charge battery mode possible
+		.slowing_current = 30,					// Do not brake hardly on high unwinding speeds
+		.manual_brake_current = 30,				// Do not kill pilot in passive winch mode
 		.unwinding_current = 50,
 		.unwinding_strong_current = 50,
 		.unwinding_strong_erpm = 50000,
@@ -294,7 +294,7 @@ static const skypuff_config max_config = {
 		.max_speed_ms = 300,
 };
 
-inline void put_to_reply_buf(const uint8_t *src, size_t count)
+inline void append_to_reply_buf(const uint8_t *src, size_t count)
 {
 	if (reply_buf_len + count > REPLY_BUF_SIZE) {
 		commands_printf("-- ALARMA!!! -- reply buffer capacity exceeded");
@@ -663,7 +663,7 @@ inline static void save_out_of_limits_error(const char *format, ...) {
 	out_of_limits_buf[0] = SK_COMM_OUT_OF_LIMITS;
 	out_of_limits_buf[1] = printed; // save message length to buffer
 
-	put_to_reply_buf(out_of_limits_buf, 1 + 1 + printed);
+	append_to_reply_buf(out_of_limits_buf, 1 + 1 + printed);
 
 #ifdef VERBOSE_TERMINAL
 	commands_printf("%s: %s %s", state_str(state), limits_wrn, (char *)(out_of_limits_buf + ind));
@@ -852,7 +852,7 @@ inline static void save_pulling_too_high_error(const float current) {
 	buffer[ind++] = SK_COMM_PULLING_TOO_HIGH;
 	buffer_append_float16(buffer, current, 1e1, &ind);
 
-	put_to_reply_buf(buffer, ind);
+	append_to_reply_buf(buffer, ind);
 }
 
 inline static void save_force_is_set(void) {
@@ -864,7 +864,7 @@ inline static void save_force_is_set(void) {
 	buffer_append_float16(buffer, config.pull_current, 1e1, &ind);
 	buffer_append_float16(buffer, amps_per_sec, 1e1, &ind);
 
-	put_to_reply_buf(buffer, ind);
+	append_to_reply_buf(buffer, ind);
 }
 
 // Used to debug antisex first time
@@ -881,7 +881,7 @@ inline static void save_custom_msg(const char *msg) {
 		ind += msg_len;
 	}
 
-	put_to_reply_buf(buffer, ind);
+	append_to_reply_buf(buffer, ind);
 }
 
 inline static void save_command_only(skypuff_custom_app_data_command c) {
@@ -891,7 +891,7 @@ inline static void save_command_only(skypuff_custom_app_data_command c) {
 
 	buffer[ind++] = c;
 
-	put_to_reply_buf(buffer, ind);
+	append_to_reply_buf(buffer, ind);
 }
 
 // State setters
@@ -1217,7 +1217,7 @@ inline static void send_conf(void) {
 
 inline static void save_fault_to_reply_buf(const mc_fault_code f) {
 	uint8_t buffer[2] = {SK_COMM_FAULT, f};
-	put_to_reply_buf(buffer, 2);
+	append_to_reply_buf(buffer, 2);
 }
 
 // Send motor mode, speed and current amps as reply to stats command
