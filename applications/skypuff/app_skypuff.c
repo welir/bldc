@@ -43,7 +43,6 @@
 //#define VERBOSE_TERMINAL
 
 #include "app_skypuff.h"
-#include "reply_buf.h"
 #include "skypuff_conf.h"
 
 /*
@@ -77,19 +76,29 @@ const char *limits_wrn = "-- CONFIGURATION IS OUT OF LIMITS --";
 
 // Threads
 static THD_FUNCTION(my_thread, arg);
+
 static THD_WORKING_AREA(my_thread_wa, 2048);
 
 // Private functions
 static void terminal_set_zero(int argc, const char **argv);
+
 static void terminal_move_zero(int argc, const char **argv);
+
 static void terminal_print_conf(int argc, const char **argv);
+
 static void terminal_get_conf(int argc, const char **argv); // Send serialized conf with COMM_CUSTOM_APP_DATA
 static void terminal_set_example_conf(int argc, const char **argv);
+
 static void terminal_alive_forever(int argc, const char **argv);
+
 static void terminal_set_state(int argc, const char **argv);
+
 static void terminal_set_pull_force(int argc, const char **argv);
+
 static void terminal_adc2_tick(int argc, const char **argv);
+
 static void terminal_measure_spool(int argc, const char **argv);
+
 #ifdef DEBUG_SMOOTH_MOTOR
 static void terminal_smooth(int argc, const char **argv);
 #endif
@@ -122,7 +131,12 @@ static systime_t antisex_start_time;  // Point in time when pull reduce activate
 
 // Speed and acceleration maesurements based on tachometer value is more accurate then mc_interface_get_rpm()
 static systime_t measurement_delay = MS2ST(5); // Measure speed based on tachometer value
-static float measurement_speed_filter_period_secs = (float)50.0 / (float)1000.0; // Period of tachometer speed measurements to overage
+static float measurement_speed_filter_period_secs =
+		(float) 50.0 / (float) 1000.0; // Period of tachometer speed measurements to overage
+
+#define REPLY_BUF_SIZE 300
+uint8_t reply_buf[REPLY_BUF_SIZE];
+size_t reply_buf_len = 0;
 
 // Store tachometer based speed measurements here
 struct {
@@ -143,12 +157,11 @@ typedef systime_t sysinterval_t;
 
 static volatile skypuff_state state; // Readable from commands threads too
 static skypuff_config config;
-static skypuff_config set_config; // Updates from terminal thread
-static skypuff_drive set_drive;	  // Update mc_configuration additional drive settings
+static skypuff_config set_config;	// Updates from terminal thread
+static skypuff_drive set_drive;		// Update mc_configuration additional drive settings
 
 // Terminal thread commands
-typedef enum
-{
+typedef enum {
 	DO_NOTHING,
 	SET_ZERO,
 	SET_MANUAL_BRAKING,
@@ -172,11 +185,9 @@ typedef enum
 static volatile skypuff_terminal_command terminal_command;
 
 // This struct is not for serialization
-typedef struct
-{
+typedef struct {
 	smooth_motor_mode mode;
-	union
-	{
+	union {
 		float current;
 		float erpm;
 	} param;
@@ -186,9 +197,9 @@ static smooth_motor_state current_motor_state;
 static smooth_motor_state target_motor_state;
 static smooth_motor_state terminal_motor_state;
 
-static int next_smooth_motor_adjustment; // Loop count for next motor adjustment
-static int prev_smooth_motor_adjustment; // Loop count of previous motor adjustment
-static float amps_per_sec;				 // Speed to change force during smooth motor adjustments, calculated
+static int next_smooth_motor_adjustment;	// Loop count for next motor adjustment
+static int prev_smooth_motor_adjustment;	// Loop count of previous motor adjustment
+static float amps_per_sec;					// Speed to change force during smooth motor adjustments, calculated
 
 /*
 	Skypuff relies on system drive settings to calculate rope meters
@@ -196,126 +207,130 @@ static float amps_per_sec;				 // Speed to change force during smooth motor adju
 	actual values stored in mc_configuration struct.
 */
 static const skypuff_drive min_drive_limits = {
-	.motor_poles = 2,
-	.wheel_diameter = 0.01, // Meters
-	.gear_ratio = 0.05,		// Motor turns per 1 spool turn
+		.motor_poles = 2,
+		.wheel_diameter = 0.01, // Meters
+		.gear_ratio = 0.05,        // Motor turns per 1 spool turn
 };
 
 static const skypuff_drive max_drive_limits = {
-	.motor_poles = 60,
-	.wheel_diameter = 2,
-	.gear_ratio = 20,
+		.motor_poles = 60,
+		.wheel_diameter = 2,
+		.gear_ratio = 20,
 };
 
 // Do we actually need meters and kilograms here?
 // Check them on UI side
 static const skypuff_config min_config = {
-	.amps_per_kg = 0.5,
-	.pull_applying_period = 1, // 0.001 secs
-	.braking_applying_period = 1, // 0.001 secs
-	.rope_length = 5,
-	.braking_length = 5,
-	.braking_extension_length = 3, // To create trigger length after unwinding
-	.slowing_length = 3,
-	.slow_erpm = 100,
-	.rewinding_trigger_length = 10,
-	.unwinding_trigger_length = 3,
-	.pull_current = 0.5,
-	.pre_pull_k = 0.1,
-	.takeoff_pull_k = 0.3,
-	.fast_pull_k = 1.05,
-	.takeoff_trigger_length = 3,
-	.pre_pull_timeout = 100, // 0.1 secs
-	.takeoff_period = 100,
-	.brake_current = 0.5,
-	.slowing_current = 0,
-	.manual_brake_current = 0.5,
-	.unwinding_current = 0.5,
-	.unwinding_strong_current = 0.6,
-	.unwinding_strong_erpm = -50000,
-	.rewinding_current = 0.5,
-	.slow_max_current = 0.5,
-	.manual_slow_max_current = 0.5,
-	.manual_slow_speed_up_current = 0.5,
-	.manual_slow_erpm = 100,
-	.antisex_min_pull_amps = 0.2,
-	.antisex_reduce_amps = 0.2,
-	.antisex_acceleration_on_mss = -50,
-	.antisex_acceleration_off_mss = -50,
-	.antisex_max_period_ms = 100,
-	.max_speed_ms = 5,
+		.amps_per_kg = 0.5,
+		.pull_applying_period = 1, // 0.001 secs
+		.braking_applying_period = 1, // 0.001 secs
+		.rope_length = 5,
+		.braking_length = 5,
+		.braking_extension_length = 3, // To create trigger length after unwinding
+		.slowing_length = 3,
+		.slow_erpm = 100,
+		.rewinding_trigger_length = 10,
+		.unwinding_trigger_length = 3,
+		.pull_current = 0.5,
+		.pre_pull_k = 0.1,
+		.takeoff_pull_k = 0.3,
+		.fast_pull_k = 1.05,
+		.takeoff_trigger_length = 3,
+		.pre_pull_timeout = 100, // 0.1 secs
+		.takeoff_period = 100,
+		.brake_current = 0.5,
+		.slowing_current = 0,
+		.manual_brake_current = 0.5,
+		.unwinding_current = 0.5,
+		.unwinding_strong_current = 0.6,
+		.unwinding_strong_erpm = -50000,
+		.rewinding_current = 0.5,
+		.slow_max_current = 0.5,
+		.manual_slow_max_current = 0.5,
+		.manual_slow_speed_up_current = 0.5,
+		.manual_slow_erpm = 100,
+		.antisex_min_pull_amps = 0.2,
+		.antisex_reduce_amps = 0.2,
+		.antisex_acceleration_on_mss = -50,
+		.antisex_acceleration_off_mss = -50,
+		.antisex_max_period_ms = 100,
+		.max_speed_ms = 5,
 };
 
 static const skypuff_config max_config = {
-	.amps_per_kg = 30,
-	.pull_applying_period = 10000,   // 10 secs
-	.braking_applying_period = 2000, // 2 secs
-	.rope_length = 5000 * 120,	     // 120 - maximum motor poles * 3
-	.braking_length = 100 * 120,
-	.braking_extension_length = 5000 * 120,
-	.slowing_length = 100 * 120,
-	.slow_erpm = 30000,
-	.rewinding_trigger_length = 5000 * 120, // Could be disabled with large trigger
-	.unwinding_trigger_length = 10 * 120,
-	.pull_current = 600, // Believe in gliders
-	.pre_pull_k = 0.5,
-	.takeoff_pull_k = 0.8,
-	.fast_pull_k = 1.5,
-	.takeoff_trigger_length = 5000 * 120,
-	.pre_pull_timeout = 5000,	// 5 secs
-	.takeoff_period = 60000,	// 1 min
-	.brake_current = 500,		// Charge battery mode possible
-	.slowing_current = 30,		// Do not brake hardly on high unwinding speeds
-	.manual_brake_current = 30, // Do not kill pilot in passive winch mode
-	.unwinding_current = 50,
-	.unwinding_strong_current = 50,
-	.unwinding_strong_erpm = 50000,
-	.rewinding_current = 100,
-	.slow_max_current = 50,
-	.manual_slow_max_current = 50,
-	.manual_slow_speed_up_current = 50,
-	.manual_slow_erpm = 40000,
-	.antisex_min_pull_amps = 1000,
-	.antisex_reduce_amps = 100,
-	.antisex_acceleration_on_mss = 50,
-	.antisex_acceleration_off_mss = 50,
-	.antisex_max_period_ms = 60000,
-	.max_speed_ms = 300,
+		.amps_per_kg = 30,
+		.pull_applying_period = 10000,   // 10 secs
+		.braking_applying_period = 2000, // 2 secs
+		.rope_length = 5000 * 120,         // 120 - maximum motor poles * 3
+		.braking_length = 100 * 120,
+		.braking_extension_length = 5000 * 120,
+		.slowing_length = 100 * 120,
+		.slow_erpm = 30000,
+		.rewinding_trigger_length = 5000 * 120, // Could be disabled with large trigger
+		.unwinding_trigger_length = 10 * 120,
+		.pull_current = 600, // Believe in gliders
+		.pre_pull_k = 0.5,
+		.takeoff_pull_k = 0.8,
+		.fast_pull_k = 1.5,
+		.takeoff_trigger_length = 5000 * 120,
+		.pre_pull_timeout = 5000,    // 5 secs
+		.takeoff_period = 60000,    // 1 min
+		.brake_current = 500,        // Charge battery mode possible
+		.slowing_current = 30,        // Do not brake hardly on high unwinding speeds
+		.manual_brake_current = 30, // Do not kill pilot in passive winch mode
+		.unwinding_current = 50,
+		.unwinding_strong_current = 50,
+		.unwinding_strong_erpm = 50000,
+		.rewinding_current = 100,
+		.slow_max_current = 50,
+		.manual_slow_max_current = 50,
+		.manual_slow_speed_up_current = 50,
+		.manual_slow_erpm = 40000,
+		.antisex_min_pull_amps = 1000,
+		.antisex_reduce_amps = 100,
+		.antisex_acceleration_on_mss = 50,
+		.antisex_acceleration_off_mss = 50,
+		.antisex_max_period_ms = 60000,
+		.max_speed_ms = 300,
 };
 
-// Convert units
-inline static float meters_per_rev(void)
+inline void put_to_reply_buf(const uint8_t *src, size_t count)
 {
+	if (reply_buf_len + count > REPLY_BUF_SIZE) {
+		commands_printf("-- ALARMA!!! -- reply buffer capacity exceeded");
+		return;
+	}
+	memcpy(reply_buf + reply_buf_len, src, count);
+	reply_buf_len = reply_buf_len + count;
+}
+
+// Convert units
+inline static float meters_per_rev(void) {
 	return mc_conf->si_wheel_diameter / mc_conf->si_gear_ratio * M_PI;
 }
 
-inline static float steps_per_rev(void)
-{
+inline static float steps_per_rev(void) {
 	return mc_conf->si_motor_poles * 3;
 }
 
-inline static int meters_to_tac_steps(float meters)
-{
+inline static int meters_to_tac_steps(float meters) {
 	return round(meters / meters_per_rev() * steps_per_rev());
 }
 
-inline static float tac_steps_to_meters(int steps)
-{
-	return (float)steps / steps_per_rev() * meters_per_rev();
+inline static float tac_steps_to_meters(int steps) {
+	return (float) steps / steps_per_rev() * meters_per_rev();
 }
 
-inline static float ms_to_erpm(float ms)
-{
+inline static float ms_to_erpm(float ms) {
 	float rps = ms / meters_per_rev();
 	float rpm = rps * 60;
 
-	return rpm * ((float)mc_conf->si_motor_poles / 2);
+	return rpm * ((float) mc_conf->si_motor_poles / 2);
 }
 
-inline static float erpm_to_ms(float erpm)
-{
+inline static float erpm_to_ms(float erpm) {
 	float erps = erpm / 60;
-	float rps = erps / ((float)mc_conf->si_motor_poles / 2);
+	float rps = erps / ((float) mc_conf->si_motor_poles / 2);
 
 	return rps * meters_per_rev();
 }
@@ -343,8 +358,7 @@ inline static void snprintf_motor_state(const smooth_motor_state *s, char *buf, 
 }
 #endif
 
-inline static void smooth_motor_instant_brake(void)
-{
+inline static void smooth_motor_instant_brake(void) {
 #ifdef DEBUG_SMOOTH_MOTOR
 	const int buf_len = 100;
 	char buf[buf_len];
@@ -359,8 +373,7 @@ inline static void smooth_motor_instant_brake(void)
 	return;
 }
 
-inline static void smooth_motor_instant_current(void)
-{
+inline static void smooth_motor_instant_current(void) {
 #ifdef DEBUG_SMOOTH_MOTOR
 	const int buf_len = 100;
 	char buf[buf_len];
@@ -377,8 +390,7 @@ inline static void smooth_motor_instant_current(void)
 	return;
 }
 
-inline static int smooth_motor_prev_adjustment_delay(void)
-{
+inline static int smooth_motor_prev_adjustment_delay(void) {
 	int prev_adjustment_delay = loop_step - prev_smooth_motor_adjustment;
 
 	// Truncate to smooth_max_step_delay if higher
@@ -388,16 +400,14 @@ inline static int smooth_motor_prev_adjustment_delay(void)
 	return prev_adjustment_delay;
 }
 
-inline static void smooth_calculate_new_speed(float applying_period)
-{
-	amps_per_sec = config.pull_current / (applying_period / (float)1000.0);
+inline static void smooth_calculate_new_speed(float applying_period) {
+	amps_per_sec = config.pull_current / (applying_period / (float) 1000.0);
 }
 
 // Do not complicate this calculation with jumps over unwinding boundaries
-inline static int smooth_calc_next_delay(const float c1, const float c2)
-{
-	double secs_delay = fabs(c2 - c1) / (double)amps_per_sec;
-	int millis_delay = (int)(secs_delay * (double)1000.0);
+inline static int smooth_calc_next_delay(const float c1, const float c2) {
+	double secs_delay = fabs(c2 - c1) / (double) amps_per_sec;
+	int millis_delay = (int) (secs_delay * (double) 1000.0);
 
 #ifdef DEBUG_SMOOTH_MOTOR
 	commands_printf("%s: loop %d, smooth_calc_next_delay(%.5fA, %.5fA) secs_delay: %.5fs, millis: %d",
@@ -410,13 +420,11 @@ inline static int smooth_calc_next_delay(const float c1, const float c2)
 	return millis_delay;
 }
 
-inline static bool smooth_is_between_unwinding(const float c)
-{
+inline static bool smooth_is_between_unwinding(const float c) {
 	return c > -config.unwinding_current && c < config.unwinding_current;
 }
 
-inline static float smooth_signed_unwinding_by(float c)
-{
+inline static float smooth_signed_unwinding_by(float c) {
 	return c >= 0 ? config.unwinding_current : -config.unwinding_current;
 }
 
@@ -424,23 +432,19 @@ inline static float smooth_signed_unwinding_by(float c)
 inline static float smooth_calc_step(const float c1,
 									 const float c2,
 									 const int prev_adjustment_delay,
-									 int *next_delay)
-{
+									 int *next_delay) {
 	// Calculate current step respecting force changing speed and delay from previous force adjustment
-	float step = amps_per_sec * (float)prev_adjustment_delay / (float)1000.0;
+	float step = amps_per_sec * (float) prev_adjustment_delay / (float) 1000.0;
 
 	float c;
 
 	// Target is below last current?
-	if (c2 < c1)
-	{
+	if (c2 < c1) {
 		// Step down to target
 		c = c1 - step;
 		if (c <= c2)
 			c = c2; // Do not jump over
-	}
-	else
-	{
+	} else {
 		// Step up to target
 		c = c1 + step;
 		if (c >= c2)
@@ -448,8 +452,7 @@ inline static float smooth_calc_step(const float c1,
 	}
 
 	// Calculated current is less then unwinding (both signs)?
-	if (smooth_is_between_unwinding(c))
-	{
+	if (smooth_is_between_unwinding(c)) {
 		// Target is weak?
 		if (smooth_is_between_unwinding(c2))
 			return c2; // Set target instanly
@@ -468,8 +471,7 @@ inline static float smooth_calc_step(const float c1,
 }
 
 // Process all posible motor mode transitions
-inline static void smooth_motor_adjustment(const int cur_tac, const int abs_tac)
-{
+inline static void smooth_motor_adjustment(const int cur_tac, const int abs_tac) {
 	int prev_adjustment_delay = smooth_motor_prev_adjustment_delay();
 
 #ifdef DEBUG_SMOOTH_MOTOR
@@ -486,121 +488,113 @@ inline static void smooth_motor_adjustment(const int cur_tac, const int abs_tac)
 	float signed_unwinding_current;
 	int next_delay = 0; // Set target instantly by default
 
-	switch (target_motor_state.mode)
-	{
-	case MOTOR_BRAKING:
-		// Braking and slowing zone always instant
-		if (abs_tac <= config.braking_length + config.slowing_length)
-		{
-#ifdef DEBUG_SMOOTH_MOTOR
-			commands_printf("%s: loop %d, -- braking/slowing zone detected", state_str(state), loop_step);
-#endif
-			smooth_motor_instant_brake();
-			return;
-		}
-
-		switch (current_motor_state.mode)
-		{
+	switch (target_motor_state.mode) {
 		case MOTOR_BRAKING:
-			step_current = smooth_calc_step(current_motor_state.param.current,
-											target_motor_state.param.current,
-											prev_adjustment_delay,
-											&next_delay);
-
-			// Finished?
-			if (!next_delay)
-			{
+			// Braking and slowing zone always instant
+			if (abs_tac <= config.braking_length + config.slowing_length) {
+#ifdef DEBUG_SMOOTH_MOTOR
+				commands_printf("%s: loop %d, -- braking/slowing zone detected", state_str(state), loop_step);
+#endif
 				smooth_motor_instant_brake();
 				return;
 			}
 
-			mc_interface_set_brake_current(step_current);
-			current_motor_state.param.current = step_current;
+			switch (current_motor_state.mode) {
+				case MOTOR_BRAKING:
+					step_current = smooth_calc_step(current_motor_state.param.current,
+													target_motor_state.param.current,
+													prev_adjustment_delay,
+													&next_delay);
 
-			prev_smooth_motor_adjustment = loop_step;
-			next_smooth_motor_adjustment = loop_step + next_delay;
-			break;
-		case MOTOR_CURRENT:
-			// Smoothly decrease current until unwinding current and then start braking
-			signed_unwinding_current = smooth_signed_unwinding_by(current_motor_state.param.current);
+					// Finished?
+					if (!next_delay) {
+						smooth_motor_instant_brake();
+						return;
+					}
 
-			step_current = smooth_calc_step(current_motor_state.param.current,
-											signed_unwinding_current,
-											prev_adjustment_delay,
-											&next_delay);
+					mc_interface_set_brake_current(step_current);
+					current_motor_state.param.current = step_current;
 
-			// signed_unwinding_current could be reached on this adjustment?
-			if (!next_delay)
-			{
-				current_motor_state.mode = MOTOR_BRAKING;
-				current_motor_state.param.current = 0;
+					prev_smooth_motor_adjustment = loop_step;
+					next_smooth_motor_adjustment = loop_step + next_delay;
+					break;
+				case MOTOR_CURRENT:
+					// Smoothly decrease current until unwinding current and then start braking
+					signed_unwinding_current = smooth_signed_unwinding_by(current_motor_state.param.current);
 
-				smooth_motor_adjustment(cur_tac, abs_tac);
-				return;
+					step_current = smooth_calc_step(current_motor_state.param.current,
+													signed_unwinding_current,
+													prev_adjustment_delay,
+													&next_delay);
+
+					// signed_unwinding_current could be reached on this adjustment?
+					if (!next_delay) {
+						current_motor_state.mode = MOTOR_BRAKING;
+						current_motor_state.param.current = 0;
+
+						smooth_motor_adjustment(cur_tac, abs_tac);
+						return;
+					}
+
+					mc_interface_set_current(step_current * antisex_amps_gain + antisex_amps);
+					current_motor_state.param.current = step_current;
+
+					prev_smooth_motor_adjustment = loop_step;
+					next_smooth_motor_adjustment = loop_step + next_delay;
+
+					break;
+				default:
+					// Process MOTOR_RELEASED and MOTOR_SPEED here
+					// Just smoothly increase braking
+					current_motor_state.mode = MOTOR_BRAKING;
+					current_motor_state.param.current = 0;
+
+					smooth_motor_adjustment(cur_tac, abs_tac);
+					break;
 			}
 
-			mc_interface_set_current(step_current * antisex_amps_gain + antisex_amps);
-			current_motor_state.param.current = step_current;
-
-			prev_smooth_motor_adjustment = loop_step;
-			next_smooth_motor_adjustment = loop_step + next_delay;
-
 			break;
-		default:
-			// Process MOTOR_RELEASED and MOTOR_SPEED here
-			// Just smoothly increase braking
-			current_motor_state.mode = MOTOR_BRAKING;
-			current_motor_state.param.current = 0;
+		case MOTOR_CURRENT: // Target state
+			switch (current_motor_state.mode) {
+				case MOTOR_CURRENT:
+					step_current = smooth_calc_step(current_motor_state.param.current,
+													target_motor_state.param.current,
+													prev_adjustment_delay,
+													&next_delay);
 
-			smooth_motor_adjustment(cur_tac, abs_tac);
-			break;
-		}
+					// Finished?
+					if (!next_delay) {
+						smooth_motor_instant_current();
+						return;
+					}
 
-		break;
-	case MOTOR_CURRENT: // Target state
-		switch (current_motor_state.mode)
-		{
-		case MOTOR_CURRENT:
-			step_current = smooth_calc_step(current_motor_state.param.current,
-											target_motor_state.param.current,
-											prev_adjustment_delay,
-											&next_delay);
+					mc_interface_set_current(step_current * antisex_amps_gain + antisex_amps);
+					current_motor_state.param.current = step_current;
 
-			// Finished?
-			if (!next_delay)
-			{
-				smooth_motor_instant_current();
-				return;
+					prev_smooth_motor_adjustment = loop_step;
+					next_smooth_motor_adjustment = loop_step + next_delay;
+					break;
+				default:
+					// Process MOTOR_BRAKING, MOTOR_RELEASED and MOTOR_SPEED here
+					// Just smoothly increase current
+					current_motor_state.mode = MOTOR_CURRENT;
+					current_motor_state.param.current = 0;
+
+					smooth_motor_adjustment(cur_tac, abs_tac);
+					break;
 			}
-
-			mc_interface_set_current(step_current * antisex_amps_gain + antisex_amps);
-			current_motor_state.param.current = step_current;
-
-			prev_smooth_motor_adjustment = loop_step;
-			next_smooth_motor_adjustment = loop_step + next_delay;
 			break;
+
 		default:
-			// Process MOTOR_BRAKING, MOTOR_RELEASED and MOTOR_SPEED here
-			// Just smoothly increase current
-			current_motor_state.mode = MOTOR_CURRENT;
-			current_motor_state.param.current = 0;
-
-			smooth_motor_adjustment(cur_tac, abs_tac);
-			break;
-		}
-		break;
-
-	default:
-		commands_printf("%s: -- Wrong smooth motor adjustment target mode: '%s'",
-						state_str(state), motor_mode_str(target_motor_state.mode));
-		next_smooth_motor_adjustment = INT_MAX;
-		return;
+			commands_printf("%s: -- Wrong smooth motor adjustment target mode: '%s'",
+							state_str(state), motor_mode_str(target_motor_state.mode));
+			next_smooth_motor_adjustment = INT_MAX;
+			return;
 	}
 }
 
 // Always instantly
-inline static void smooth_motor_release(void)
-{
+inline static void smooth_motor_release(void) {
 #ifdef DEBUG_SMOOTH_MOTOR
 	commands_printf("%s: loop %d, -- set instant MOTOR_RELEASED, smooth_motor_release()", state_str(state), loop_step);
 #endif
@@ -616,8 +610,7 @@ inline static void smooth_motor_release(void)
 }
 
 // Always instantly
-inline static void smooth_motor_speed(const float erpm)
-{
+inline static void smooth_motor_speed(const float erpm) {
 #ifdef DEBUG_SMOOTH_MOTOR
 	commands_printf("%s: loop %d, -- set instant MOTOR_SPEED smooth_motor_speed(%.0f ERPM)",
 					state_str(state), loop_step, (double)erpm);
@@ -632,8 +625,7 @@ inline static void smooth_motor_speed(const float erpm)
 	prev_smooth_motor_adjustment = loop_step;
 }
 
-inline static void smooth_motor_brake(const int cur_tac, const int abs_tac, const float current)
-{
+inline static void smooth_motor_brake(const int cur_tac, const int abs_tac, const float current) {
 #ifdef DEBUG_SMOOTH_MOTOR
 	commands_printf("%s: loop %d, -- smooth_motor_brake(cur_tac %d, %.2fA)",
 					state_str(state), loop_step, cur_tac, (double)current);
@@ -646,8 +638,7 @@ inline static void smooth_motor_brake(const int cur_tac, const int abs_tac, cons
 	smooth_motor_adjustment(cur_tac, abs_tac);
 }
 
-inline static void smooth_motor_current(const int cur_tac, const int abs_tac, const float current)
-{
+inline static void smooth_motor_current(const int cur_tac, const int abs_tac, const float current) {
 #ifdef DEBUG_SMOOTH_MOTOR
 	commands_printf("%s: loop %d, -- smooth_motor_current(%.2fA)",
 					state_str(state), loop_step, (double)current);
@@ -661,109 +652,100 @@ inline static void smooth_motor_current(const int cur_tac, const int abs_tac, co
 }
 
 // Helper functions to check limits
-inline static void save_out_of_limits_error(const char *format, ...)
-{
-    static const int out_of_limits_max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
-    static uint8_t out_of_limits_buf[PACKET_MAX_PL_LEN - 1];
+inline static void save_out_of_limits_error(const char *format, ...) {
+	static const int out_of_limits_max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
+	static uint8_t out_of_limits_buf[PACKET_MAX_PL_LEN - 1];
 
-    va_list args;
-    va_start(args, format);
-    int32_t printed = vsnprintf((char *)(out_of_limits_buf + 2), out_of_limits_max_buf_size - 1, format, args);
-    va_end(args);
-    out_of_limits_buf[0] = SK_COMM_OUT_OF_LIMITS;
-    out_of_limits_buf[1] = printed; // save message length to buffer
+	va_list args;
+	va_start(args, format);
+	int32_t printed = vsnprintf((char *) (out_of_limits_buf + 2), out_of_limits_max_buf_size - 1, format, args);
+	va_end(args);
+	out_of_limits_buf[0] = SK_COMM_OUT_OF_LIMITS;
+	out_of_limits_buf[1] = printed; // save message length to buffer
 
-    reply_buf_append_from(out_of_limits_buf, 1 + 1 + printed);
+	put_to_reply_buf(out_of_limits_buf, 1 + 1 + printed);
 
 #ifdef VERBOSE_TERMINAL
-    commands_printf("%s: %s %s", state_str(state), limits_wrn, (char *)(out_of_limits_buf + ind));
+	commands_printf("%s: %s %s", state_str(state), limits_wrn, (char *)(out_of_limits_buf + ind));
 #endif
 }
 
 inline static bool is_int_out_of_limits(const char *name, const char *units,
-										const int val, const int min, const int max)
-{
+										const int val, const int min, const int max) {
 	if (val >= min && val <= max)
 		return false;
 
-    save_out_of_limits_error("%s %d %s is out of limits [%d, %d]",
-					   name, val, units, min, max);
+	save_out_of_limits_error("%s %d %s is out of limits [%d, %d]",
+							 name, val, units, min, max);
 
 	return true;
 }
 
 inline static bool is_float_out_of_limits(const char *name, const char *units,
-										  const float val, const float min, const float max)
-{
+										  const float val, const float min, const float max) {
 	if (val >= min && val <= max)
 		return false;
 
-    save_out_of_limits_error("%s %.5f %s is out of limits [%.5f, %.5f]",
-					   name, (double)val, units, (double)min, (double)max);
+	save_out_of_limits_error("%s %.5f %s is out of limits [%.5f, %.5f]",
+							 name, (double) val, units, (double) min, (double) max);
 	return true;
 }
 
 inline static bool is_pull_out_of_limits(const char *name,
-										 const float amps, const float min, const float max)
-{
+										 const float amps, const float min, const float max) {
 	if (amps >= min && amps <= max)
 		return false;
 
-    save_out_of_limits_error("%s %.1fA (%.2fKg) is out of limits [%.1fA (%.2fKg), %.1fA (%.2fKg)]",
-					   name,
-					   (double)amps, (double)(amps / config.amps_per_kg),
-					   (double)min, (double)(min / config.amps_per_kg),
-					   (double)max, (double)(max / config.amps_per_kg));
+	save_out_of_limits_error("%s %.1fA (%.2fKg) is out of limits [%.1fA (%.2fKg), %.1fA (%.2fKg)]",
+							 name,
+							 (double) amps, (double) (amps / config.amps_per_kg),
+							 (double) min, (double) (min / config.amps_per_kg),
+							 (double) max, (double) (max / config.amps_per_kg));
 	return true;
 }
 
 inline static bool is_distance_out_of_limits(const char *name,
-											 const int steps, const int min, const int max)
-{
+											 const int steps, const int min, const int max) {
 	if (steps >= min && steps <= max)
 		return false;
 
-    save_out_of_limits_error("%s %d steps (%.2f meters) is out of limits [%d (%.2fm), %d (%.2fm)]",
-					   name,
-					   steps, (double)tac_steps_to_meters(steps),
-					   min, (double)tac_steps_to_meters(min),
-					   max, (double)tac_steps_to_meters(max));
+	save_out_of_limits_error("%s %d steps (%.2f meters) is out of limits [%d (%.2fm), %d (%.2fm)]",
+							 name,
+							 steps, (double) tac_steps_to_meters(steps),
+							 min, (double) tac_steps_to_meters(min),
+							 max, (double) tac_steps_to_meters(max));
 	return true;
 }
 
 inline static bool is_speed_out_of_limits(const char *name,
-										  const float erpm, const float min, const float max)
-{
+										  const float erpm, const float min, const float max) {
 	if (erpm >= min && erpm <= max)
 		return false;
 
-    save_out_of_limits_error("%s %.1f ERPM (%.1f m/s) is out of limits [%.1f (%.1f m/s), %.1f (%.1f m/s)]",
-					   name,
-					   (double)erpm, (double)erpm_to_ms(erpm),
-					   (double)min, (double)erpm_to_ms(min),
-					   (double)max, (double)erpm_to_ms(max));
+	save_out_of_limits_error("%s %.1f ERPM (%.1f m/s) is out of limits [%.1f (%.1f m/s), %.1f (%.1f m/s)]",
+							 name,
+							 (double) erpm, (double) erpm_to_ms(erpm),
+							 (double) min, (double) erpm_to_ms(min),
+							 (double) max, (double) erpm_to_ms(max));
 	return true;
 }
 
-static bool is_drive_config_out_of_limits(const skypuff_drive *drv)
-{
-	if (drv->motor_poles % 2)
-	{
-        save_out_of_limits_error("motor_poles: %dp must be odd", drv->motor_poles);
+static bool is_drive_config_out_of_limits(const skypuff_drive *drv) {
+	if (drv->motor_poles % 2) {
+		save_out_of_limits_error("motor_poles: %dp must be odd", drv->motor_poles);
 		return true;
 	}
 
 	return is_int_out_of_limits("motor_poles", "p", drv->motor_poles,
 								min_drive_limits.motor_poles, max_drive_limits.motor_poles) ||
-		   is_float_out_of_limits("wheel_diameter", "mm", drv->wheel_diameter * (float)1000,
-								  min_drive_limits.wheel_diameter * (float)1000.0,
-								  max_drive_limits.wheel_diameter * (float)1000.0) ||
+		   is_float_out_of_limits("wheel_diameter", "mm", drv->wheel_diameter * (float) 1000,
+								  min_drive_limits.wheel_diameter * (float) 1000.0,
+								  max_drive_limits.wheel_diameter * (float) 1000.0) ||
 		   is_float_out_of_limits("gear_ratio", "turn(s)", drv->gear_ratio,
 								  min_drive_limits.gear_ratio, max_drive_limits.gear_ratio);
 }
 
-static bool is_config_out_of_limits(const skypuff_config *conf)
-{
+static bool is_config_out_of_limits(const skypuff_config *conf) {
 	return is_float_out_of_limits("amps_per_kg", "KgA", conf->amps_per_kg,
 								  min_config.amps_per_kg, max_config.amps_per_kg) ||
 		   is_int_out_of_limits("pull_applying_period", "milliseconds", conf->pull_applying_period,
@@ -810,12 +792,12 @@ static bool is_config_out_of_limits(const skypuff_config *conf)
 								 min_config.manual_slow_max_current, max_config.manual_slow_max_current) ||
 		   is_pull_out_of_limits("manual_slow_speed_up_current", conf->manual_slow_speed_up_current,
 								 min_config.manual_slow_speed_up_current, max_config.manual_slow_speed_up_current) ||
-		   is_float_out_of_limits("pre_pull_k", "%", conf->pre_pull_k * (float)100,
-								  min_config.pre_pull_k * (float)100, max_config.pre_pull_k * (float)100) ||
-		   is_float_out_of_limits("takeoff_pull_k", "%", conf->takeoff_pull_k * (float)100,
-								  min_config.takeoff_pull_k * (float)100, max_config.takeoff_pull_k * (float)100) ||
-		   is_float_out_of_limits("fast_pull_k", "%", conf->fast_pull_k * (float)100,
-								  min_config.fast_pull_k * (float)100, max_config.fast_pull_k * (float)100) ||
+		   is_float_out_of_limits("pre_pull_k", "%", conf->pre_pull_k * (float) 100,
+								  min_config.pre_pull_k * (float) 100, max_config.pre_pull_k * (float) 100) ||
+		   is_float_out_of_limits("takeoff_pull_k", "%", conf->takeoff_pull_k * (float) 100,
+								  min_config.takeoff_pull_k * (float) 100, max_config.takeoff_pull_k * (float) 100) ||
+		   is_float_out_of_limits("fast_pull_k", "%", conf->fast_pull_k * (float) 100,
+								  min_config.fast_pull_k * (float) 100, max_config.fast_pull_k * (float) 100) ||
 		   is_int_out_of_limits("pre_pull_timeout", "milliseconds", conf->pre_pull_timeout,
 								min_config.pre_pull_timeout, max_config.pre_pull_timeout) ||
 		   is_int_out_of_limits("takeoff_period", "milliseconds", conf->takeoff_period,
@@ -835,15 +817,13 @@ static bool is_config_out_of_limits(const skypuff_config *conf)
 }
 
 // EEPROM
-static void store_config_to_eeprom(const skypuff_config *c)
-{
+static void store_config_to_eeprom(const skypuff_config *c) {
 	mc_interface_release_motor();
 
-	eeprom_var *e = (eeprom_var *)c;
+	eeprom_var *e = (eeprom_var *) c;
 
 	// Implement this if you need
-	if (sizeof(skypuff_config) % sizeof(eeprom_var))
-	{
+	if (sizeof(skypuff_config) % sizeof(eeprom_var)) {
 		commands_printf("%s: -- store_config_to_eeprom(): config size %u must be dividable by %u",
 						state_str(state), sizeof(skypuff_config), sizeof(eeprom_var));
 		return;
@@ -853,20 +833,18 @@ static void store_config_to_eeprom(const skypuff_config *c)
 		conf_general_store_eeprom_var_custom(e + a, a);
 }
 
-static void read_config_from_eeprom(skypuff_config *c)
-{
-	eeprom_var *e = (eeprom_var *)c;
+static void read_config_from_eeprom(skypuff_config *c) {
+	eeprom_var *e = (eeprom_var *) c;
 
 	for (unsigned int a = 0; a < sizeof(skypuff_config) / sizeof(eeprom_var); a++)
 		conf_general_read_eeprom_var_custom(e + a, a);
 }
 
 inline static bool is_alive(void) {
-    return alive_forever || alive_until > loop_step;
+	return alive_forever || alive_until > loop_step;
 }
 
-inline static void send_pulling_too_high(const float current)
-{
+inline static void save_pulling_too_high_error(const float current) {
 	const int max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
 	uint8_t buffer[max_buf_size];
 	int32_t ind = 0;
@@ -874,11 +852,10 @@ inline static void send_pulling_too_high(const float current)
 	buffer[ind++] = SK_COMM_PULLING_TOO_HIGH;
 	buffer_append_float16(buffer, current, 1e1, &ind);
 
-	commands_send_app_data(buffer, ind);
+	put_to_reply_buf(buffer, ind);
 }
 
-inline static void send_force_is_set(void)
-{
+inline static void save_force_is_set(void) {
 	const int max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
 	uint8_t buffer[max_buf_size];
 	int32_t ind = 0;
@@ -887,45 +864,41 @@ inline static void send_force_is_set(void)
 	buffer_append_float16(buffer, config.pull_current, 1e1, &ind);
 	buffer_append_float16(buffer, amps_per_sec, 1e1, &ind);
 
-	commands_send_app_data(buffer, ind);
+	put_to_reply_buf(buffer, ind);
 }
 
 // Used to debug antisex first time
-inline static void send_custom_msg(const char *msg)
-{
+inline static void save_custom_msg(const char *msg) {
 	const int max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
 	uint8_t buffer[max_buf_size];
 	int32_t ind = 0;
 
 	buffer[ind++] = SK_COMM_MSG;
 	int msg_len = strlen(msg);
-	if (max_buf_size - 1 >= msg_len)
-	{
+	buffer[ind++] = msg_len;
+	if (max_buf_size - 1 >= msg_len) {
 		memcpy(buffer + ind, msg, msg_len);
 		ind += msg_len;
 	}
 
-	commands_send_app_data(buffer, ind);
+	put_to_reply_buf(buffer, ind);
 }
 
-inline static void send_command_only(skypuff_custom_app_data_command c)
-{
+inline static void save_command_only(skypuff_custom_app_data_command c) {
 	const int max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
 	uint8_t buffer[max_buf_size];
 	int32_t ind = 0;
 
 	buffer[ind++] = c;
 
-	commands_send_app_data(buffer, ind);
+	put_to_reply_buf(buffer, ind);
 }
 
 // State setters
 inline static void brake_state(const int cur_tac, const skypuff_state new_state, const float current,
-							   const char *additional_msg)
-{
+							   const char *additional_msg) {
 	// Braking could be applied in the braking states to renew control timeout
-	if (state != new_state)
-	{
+	if (state != new_state) {
 #ifdef VERBOSE_TERMINAL
 		float erpm = mc_interface_get_rpm();
 		prev_print = loop_step;
@@ -937,7 +910,7 @@ inline static void brake_state(const int cur_tac, const skypuff_state new_state,
 						(double)(current / config.amps_per_kg), (double)current,
 						additional_msg);
 #else
-		(void)additional_msg;
+		(void) additional_msg;
 #endif
 		state = new_state;
 	}
@@ -947,29 +920,24 @@ inline static void brake_state(const int cur_tac, const skypuff_state new_state,
 	timeout_reset();
 }
 
-inline static void braking(const int cur_tac)
-{
+inline static void braking(const int cur_tac) {
 	brake_state(cur_tac, BRAKING, config.brake_current, "");
 }
 
 // This state mostly to inform UI that it's time to enable Unwinding and Pull buttons
-inline static void braking_extension(const int cur_tac)
-{
+inline static void braking_extension(const int cur_tac) {
 	brake_state(cur_tac, BRAKING_EXTENSION, config.brake_current, "");
 }
 
-inline static void manual_brake(const int cur_tac)
-{
+inline static void manual_brake(const int cur_tac) {
 	brake_state(cur_tac, MANUAL_BRAKING, config.manual_brake_current,
-                !is_alive() ? ", -- Communication timeout, send 'alive_forever'" : "");
+				!is_alive() ? ", -- Communication timeout, send 'alive_forever'" : "");
 }
 
 inline static void pull_state(const int cur_tac, const float current, const skypuff_state new_state,
-							  const char *additional_msg)
-{
+							  const char *additional_msg) {
 	// Updates of pulling force sets this state again, do not change state_start_time
-	if (state != new_state)
-	{
+	if (state != new_state) {
 		state_start_time = loop_step;
 		state = new_state;
 	}
@@ -986,83 +954,73 @@ inline static void pull_state(const int cur_tac, const float current, const skyp
 					(double)(current / config.amps_per_kg), (double)current,
 					additional_msg);
 #else
-	(void)additional_msg;
+	(void) additional_msg;
 #endif
 
 	smooth_motor_current(cur_tac, prev_abs_tac, current);
 	timeout_reset();
 }
 
-inline static float unwinding_current(void)
-{
-	if(measurement.filtered_speed_tac_ms > erpm_to_ms(config.unwinding_strong_erpm) ||
-	  loop_step - unwinding_start_step < strong_unwinding_period)
+inline static float unwinding_current(void) {
+	if (measurement.filtered_speed_tac_ms > erpm_to_ms(config.unwinding_strong_erpm) ||
+		loop_step - unwinding_start_step < strong_unwinding_period)
 		return config.unwinding_strong_current;
 	else
 		return config.unwinding_current;
 }
 
-inline static void unwinding(const int cur_tac)
-{
-	if(state != UNWINDING)
+inline static void unwinding(const int cur_tac) {
+	if (state != UNWINDING)
 		unwinding_start_step = loop_step;
 
 	pull_state(cur_tac, unwinding_current(), UNWINDING, "");
 }
 
-inline static void rewinding(const int cur_tac)
-{
+inline static void rewinding(const int cur_tac) {
 	pull_state(cur_tac, config.rewinding_current, REWINDING, "");
 }
 
-inline static void pre_pull(const int cur_tac)
-{
+inline static void pre_pull(const int cur_tac) {
 	pull_state(cur_tac, config.pre_pull_k * config.pull_current, PRE_PULL, "");
 }
 
-inline static void takeoff_pull(const int cur_tac)
-{
+inline static void takeoff_pull(const int cur_tac) {
 	pull_state(cur_tac, config.takeoff_pull_k * config.pull_current, TAKEOFF_PULL, "");
 }
 
-inline static void pull(const int cur_tac)
-{
+inline static void pull(const int cur_tac) {
 	pull_state(cur_tac, config.pull_current, PULL, "");
 }
 
-inline static void fast_pull(const int cur_tac)
-{
+inline static void fast_pull(const int cur_tac) {
 	pull_state(cur_tac, config.fast_pull_k * config.pull_current, FAST_PULL, "");
 }
 
-inline static void manual_slow_speed_up(const int cur_tac)
-{
+inline static void manual_slow_speed_up(const int cur_tac) {
 	char msg[64];
 	snprintf(msg, 64, ", until: %.1fms (%.0f ERPM)",
-			 (double)erpm_to_ms(config.manual_slow_erpm), (double)config.manual_slow_erpm);
+			 (double) erpm_to_ms(config.manual_slow_erpm), (double) config.manual_slow_erpm);
 
 	// Set high filtered value on entering speed up mode
 	// Positive current - positive ERPM, tachometer value goes up
 	erpm_filtered = config.manual_slow_erpm;
-	
+
 	pull_state(cur_tac, config.manual_slow_speed_up_current, MANUAL_SLOW_SPEED_UP, msg);
 }
 
-inline static void manual_slow_back_speed_up(const int cur_tac)
-{
+inline static void manual_slow_back_speed_up(const int cur_tac) {
 	char msg[64];
 	snprintf(msg, 64, ", until: %.1fms (%.0f ERPM)",
-			 (double)erpm_to_ms(config.manual_slow_erpm), (double)config.manual_slow_erpm);
+			 (double) erpm_to_ms(config.manual_slow_erpm), (double) config.manual_slow_erpm);
 
 	// Set high filtered value on entering speed up mode
 	// Negative current - negative ERPM, tachometer value goes down
 	erpm_filtered = -config.manual_slow_erpm;
-	
+
 	pull_state(cur_tac, -config.manual_slow_speed_up_current, MANUAL_SLOW_BACK_SPEED_UP, msg);
 }
 
-inline static void slowing(const int cur_tac, const float erpm)
-{
+inline static void slowing(const int cur_tac, const float erpm) {
 	state = SLOWING;
 
 	prev_print = loop_step;
@@ -1074,7 +1032,7 @@ inline static void slowing(const int cur_tac, const float erpm)
 					(double)erpm_to_ms(erpm), (double)erpm,
 					(double)erpm_to_ms(config.slow_erpm), (double)config.slow_erpm);
 #else
-	(void)erpm;
+	(void) erpm;
 #endif
 	// Brake or release
 	if (config.slowing_current > 0.1)
@@ -1084,8 +1042,7 @@ inline static void slowing(const int cur_tac, const float erpm)
 }
 
 inline static void speed_state(const int cur_tac, const float cur_erpm,
-							  const float to_zero_constant_erpm, const skypuff_state new_state)
-{
+							   const float to_zero_constant_erpm, const skypuff_state new_state) {
 	state = new_state;
 
 	prev_print = loop_step;
@@ -1102,24 +1059,20 @@ inline static void speed_state(const int cur_tac, const float cur_erpm,
 	timeout_reset();
 }
 
-inline static void slow(const int cur_tac, const float cur_erpm)
-{
+inline static void slow(const int cur_tac, const float cur_erpm) {
 	speed_state(cur_tac, cur_erpm, config.slow_erpm, SLOW);
 }
 
-inline static void manual_slow(const int cur_tac, const float cur_erpm)
-{
+inline static void manual_slow(const int cur_tac, const float cur_erpm) {
 	speed_state(cur_tac, cur_erpm, config.manual_slow_erpm, MANUAL_SLOW);
 }
 
-inline static void manual_slow_back(const int cur_tac, const float cur_erpm)
-{
+inline static void manual_slow_back(const int cur_tac, const float cur_erpm) {
 	speed_state(cur_tac, cur_erpm, -config.manual_slow_erpm, MANUAL_SLOW_BACK);
 }
 
 // Example conf for my winch model: https://youtu.be/KoNegc4SzxY?t=6
-static void set_example_conf(skypuff_config *cfg)
-{
+static void set_example_conf(skypuff_config *cfg) {
 	// Some example ranges
 	cfg->rope_length = meters_to_tac_steps(50);
 	cfg->braking_length = meters_to_tac_steps(1);
@@ -1134,7 +1087,7 @@ static void set_example_conf(skypuff_config *cfg)
 	cfg->unwinding_strong_erpm = ms_to_erpm(-1);
 
 	// Forces
-	cfg->amps_per_kg = 3;			  // 7 Amps for 1Kg force
+	cfg->amps_per_kg = 3;              // 7 Amps for 1Kg force
 	cfg->pull_applying_period = 1500; // 1.5 secs
 	cfg->braking_applying_period = 500; // 0.5 secs
 	cfg->brake_current = 0.3 * cfg->amps_per_kg;
@@ -1167,8 +1120,7 @@ static void set_example_conf(skypuff_config *cfg)
 	cfg->max_speed_ms = 20;
 }
 
-static void set_example_drive(skypuff_drive *drv)
-{
+static void set_example_drive(skypuff_drive *drv) {
 	drv->motor_poles = 14;
 	drv->wheel_diameter = 0.05;
 	drv->gear_ratio = 1;
@@ -1178,43 +1130,43 @@ static void set_example_drive(skypuff_drive *drv)
 }
 
 // Serialization functions
-inline static void serialize_scales(uint8_t *buffer, int32_t *ind)
-{
-    float max_force = fabs(mc_conf->lo_current_max) > fabs(mc_conf->lo_current_min) ? fabs(mc_conf->lo_current_max) : fabs(mc_conf->lo_current_min);
-    float max_discharge = mc_conf->lo_current_max < mc_conf->lo_in_current_max ? mc_conf->lo_current_max : mc_conf->lo_in_current_max;
-    // Min (discharge) current is negative
-    float max_charge = mc_conf->lo_current_min > mc_conf->lo_in_current_min ? mc_conf->lo_current_min : mc_conf->lo_in_current_min;
+inline static void serialize_scales(uint8_t *buffer, int32_t *ind) {
+	float max_force =
+			fabs(mc_conf->lo_current_max) > fabs(mc_conf->lo_current_min) ? fabs(mc_conf->lo_current_max) : fabs(
+					mc_conf->lo_current_min);
+	float max_discharge =
+			mc_conf->lo_current_max < mc_conf->lo_in_current_max ? mc_conf->lo_current_max : mc_conf->lo_in_current_max;
+	// Min (discharge) current is negative
+	float max_charge =
+			mc_conf->lo_current_min > mc_conf->lo_in_current_min ? mc_conf->lo_current_min : mc_conf->lo_in_current_min;
 
-    // currents
-    buffer_append_float16(buffer, max_force, 1e1, ind);
-    buffer_append_float16(buffer, max_discharge, 1e1, ind);
-    buffer_append_float16(buffer, max_charge, 1e1, ind);
-    // temps
-    buffer_append_float16(buffer, mc_conf->l_temp_fet_start, 1e1, ind);
-    buffer_append_float16(buffer, mc_conf->l_temp_motor_start, 1e1, ind);
-    // battery voltage
-    buffer_append_float32(buffer, fmax(mc_conf->l_min_vin, mc_conf->l_battery_cut_start), 1e2, ind);
-    buffer_append_float32(buffer, mc_conf->l_max_vin, 1e2, ind);
+	// currents
+	buffer_append_float16(buffer, max_force, 1e1, ind);
+	buffer_append_float16(buffer, max_discharge, 1e1, ind);
+	buffer_append_float16(buffer, max_charge, 1e1, ind);
+	// temps
+	buffer_append_float16(buffer, mc_conf->l_temp_fet_start, 1e1, ind);
+	buffer_append_float16(buffer, mc_conf->l_temp_motor_start, 1e1, ind);
+	// battery voltage
+	buffer_append_float32(buffer, fmax(mc_conf->l_min_vin, mc_conf->l_battery_cut_start), 1e2, ind);
+	buffer_append_float32(buffer, mc_conf->l_max_vin, 1e2, ind);
 }
 
-inline static void serialize_drive(uint8_t *buffer, int32_t *ind)
-{
-	buffer[(*ind)++] = (uint8_t)mc_conf->si_motor_poles;
+inline static void serialize_drive(uint8_t *buffer, int32_t *ind) {
+	buffer[(*ind)++] = (uint8_t) mc_conf->si_motor_poles;
 	buffer_append_float32_auto(buffer, mc_conf->si_gear_ratio, ind);
 	buffer_append_float32_auto(buffer, mc_conf->si_wheel_diameter, ind);
-	buffer[(*ind)++] = (uint8_t)mc_conf->si_battery_type;
-	buffer[(*ind)++] = (uint8_t)mc_conf->si_battery_cells;
+	buffer[(*ind)++] = (uint8_t) mc_conf->si_battery_type;
+	buffer[(*ind)++] = (uint8_t) mc_conf->si_battery_cells;
 }
 
-inline static void get_stats(float *erpm, float *motor_amps, float *battery_amps)
-{
+inline static void get_stats(float *erpm, float *motor_amps, float *battery_amps) {
 	*erpm = mc_interface_get_rpm();
 	*motor_amps = mc_interface_read_reset_avg_motor_current();
 	*battery_amps = mc_interface_read_reset_avg_input_current();
 }
 
-inline static void append_power_stats(uint8_t *buffer, int32_t *ind, const int cur_tac)
-{
+inline static void append_power_stats(uint8_t *buffer, int32_t *ind, const int cur_tac) {
 	float erpm;
 	float motor_amps;
 	float battery_amps;
@@ -1228,8 +1180,7 @@ inline static void append_power_stats(uint8_t *buffer, int32_t *ind, const int c
 	buffer_append_float32(buffer, battery_amps, 1e3, ind);
 }
 
-inline static void append_temp_stats(uint8_t *buffer, int32_t *ind)
-{
+inline static void append_temp_stats(uint8_t *buffer, int32_t *ind) {
 	float fets_temp = mc_interface_temp_fet_filtered();
 	float motor_temp = mc_interface_temp_motor_filtered();
 
@@ -1239,11 +1190,10 @@ inline static void append_temp_stats(uint8_t *buffer, int32_t *ind)
 }
 
 inline static void increment_alive_until(void) {
-    alive_until = loop_step + alive_timeout_increment;
+	alive_until = loop_step + alive_timeout_increment;
 }
 
-inline static void send_conf(void)
-{
+inline static void send_conf(void) {
 	const int max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
 	uint8_t buffer[max_buf_size];
 	int32_t ind = 0;
@@ -1256,49 +1206,22 @@ inline static void send_conf(void)
 	serialize_drive(buffer, &ind);
 	serialize_config(buffer, &ind, &config);
 
-	if (ind > max_buf_size)
-	{
-		commands_printf("%s: -- ALARMA!!! -- send_conf() max buffer size %d, serialized bufer %d bytes. Memory corrupted!",
-						state_str(state), max_buf_size, ind);
+	if (ind > max_buf_size) {
+		commands_printf(
+				"%s: -- ALARMA!!! -- send_conf() max buffer size %d, serialized bufer %d bytes. Memory corrupted!",
+				state_str(state), max_buf_size, ind);
 	}
 
 	commands_send_app_data(buffer, ind);
 }
 
-inline static void save_fault_to_reply_buf(const mc_fault_code f)
-{
-    uint8_t buffer[2] = {SK_COMM_FAULT, f};
-    reply_buf_append_from(buffer, 2);
-}
-
-/**
- * @brief Get the next replybuf message size
- *
- * @return size_t size of next message
- */
-inline static size_t get_next_reply_buf_message_size(void) {
-    if (reply_buf_contains == 0)
-        return 0;
-    switch (*reply_buf_tail()) {
-        case (SK_COMM_OUT_OF_LIMITS): {
-            uint8_t message_size = *(reply_buf_tail() + 1);
-            return 1 + 1 + message_size;
-        }
-        case (SK_COMM_FAULT): {
-            return 2;
-        }
-        default: {
-#ifdef VERBOSE_TERMINAL
-            commands_printf("Cannot read from reply_buf. Unknown message type %d", *reply_buf_tail());
-#endif
-            return 0;
-        }
-    }
+inline static void save_fault_to_reply_buf(const mc_fault_code f) {
+	uint8_t buffer[2] = {SK_COMM_FAULT, f};
+	put_to_reply_buf(buffer, 2);
 }
 
 // Send motor mode, speed and current amps as reply to stats command
-inline static void send_stats(const int cur_tac, bool add_temps)
-{
+inline static void send_stats(const int cur_tac, bool add_temps) {
 	const int max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
 	uint8_t buffer[max_buf_size];
 	int32_t ind = 0;
@@ -1306,34 +1229,25 @@ inline static void send_stats(const int cur_tac, bool add_temps)
 	buffer[ind++] = add_temps ? SK_COMM_TEMP_STATS : SK_COMM_POWER_STATS;
 	buffer[ind++] = state;
 
-    append_power_stats(buffer, &ind, cur_tac);
+	append_power_stats(buffer, &ind, cur_tac);
 	if (add_temps)
-        append_temp_stats(buffer, &ind);
+		append_temp_stats(buffer, &ind);
 
-	if (ind > max_buf_size)
-	{
-		commands_printf("%s: -- ALARMA!!! -- send_stats() max buffer size %d, serialized bufer %d bytes. Memory corrupted!",
-						state_str(state), max_buf_size, ind);
+	if (ind > max_buf_size) {
+		commands_printf(
+				"%s: -- ALARMA!!! -- send_stats() max buffer size %d, serialized bufer %d bytes. Memory corrupted!",
+				state_str(state), max_buf_size, ind);
 	}
 
-    // copy messages from reply_buf to buffer until it`s possible
-    while (1) {
-        size_t next_reply_buf_message_size = get_next_reply_buf_message_size();
-        if (next_reply_buf_message_size > 0 && next_reply_buf_message_size < (size_t)(max_buf_size - ind)) {
-            uint8_t buffer_for_message[PACKET_MAX_PL_LEN - 1 - 19]; // 1 + 19 bytes is maximal stats package length
-            reply_buf_read_to(buffer_for_message, next_reply_buf_message_size);
-            memcpy(buffer + ind, buffer_for_message, next_reply_buf_message_size);
-            ind += next_reply_buf_message_size;
-        } else {
-            break;
-        }
-    }
+	if (reply_buf_len > 0) {
+		memcpy(buffer + ind, reply_buf, reply_buf_len);
+		reply_buf_len = 0;
+	}
 
 	commands_send_app_data(buffer, ind);
 }
 
-void set_adc2_pushpull(void)
-{
+void set_adc2_pushpull(void) {
 	palClearPad(HW_ADC_EXT2_GPIO, HW_ADC_EXT2_PIN);
 	palSetPadMode(HW_ADC_EXT2_GPIO, HW_ADC_EXT2_PIN,
 				  PAL_MODE_OUTPUT_PUSHPULL |
@@ -1344,10 +1258,8 @@ void set_adc2_pushpull(void)
 #endif
 }
 
-void custom_app_data_handler(unsigned char *data, unsigned int len)
-{
-	if (len < 1)
-	{
+void custom_app_data_handler(unsigned char *data, unsigned int len) {
+	if (len < 1) {
 		commands_printf("%s: -- Can't deserialize command -- No data.",
 						state_str(state));
 		return;
@@ -1358,39 +1270,37 @@ void custom_app_data_handler(unsigned char *data, unsigned int len)
 	int32_t ind = 0;
 	command = data[ind++];
 
-	switch (command)
-	{
-    case SK_COMM_POWER_STATS:
-        increment_alive_until();
-        terminal_command = SEND_POWER_STATS;
-        break;
-    case SK_COMM_TEMP_STATS:
-        increment_alive_until();
-        terminal_command = SEND_TEMP_STATS;
-        break;
-	case SK_COMM_SETTINGS_V1:
-        // Note that deserialize_scales is not called here.
-        // That's because request does not contain this block.
-		if (!deserialize_drive(data, len, &set_drive, &ind))
-			return;
-		if (!deserialize_config(data, len, &set_config, &ind))
-			return;
+	switch (command) {
+		case SK_COMM_POWER_STATS:
+			increment_alive_until();
+			terminal_command = SEND_POWER_STATS;
+			break;
+		case SK_COMM_TEMP_STATS:
+			increment_alive_until();
+			terminal_command = SEND_TEMP_STATS;
+			break;
+		case SK_COMM_SETTINGS_V1:
+			// Note that deserialize_scales is not called here.
+			// That's because request does not contain this block.
+			if (!deserialize_drive(data, len, &set_drive, &ind))
+				return;
+			if (!deserialize_config(data, len, &set_config, &ind))
+				return;
 
-		terminal_command = SET_CONF;
-		break;
-	case SK_COMM_GUILLOTINE:
-		// Cut the rope!
-		terminal_adc2_tick(0, 0);
-		break;
-	default:
-		commands_printf("%s: -- Can't deserialize command -- Unknown command '%d'.",
-						state_str(state), (int)command);
-		return;
+			terminal_command = SET_CONF;
+			break;
+		case SK_COMM_GUILLOTINE:
+			// Cut the rope!
+			terminal_adc2_tick(0, 0);
+			break;
+		default:
+			commands_printf("%s: -- Can't deserialize command -- Unknown command '%d'.",
+							state_str(state), (int) command);
+			return;
 	}
 
 	// Extra bytes?
-	if (ind != (int32_t)len)
-	{
+	if (ind != (int32_t) len) {
 		commands_printf("%s: -- Extra bytes received -- Extra %d bytes on %s command deserialization.",
 						state_str(state), (len - ind), sk_command_str(command));
 		return;
@@ -1401,15 +1311,14 @@ void custom_app_data_handler(unsigned char *data, unsigned int len)
 //
 // Some ChibiOS missing time functions
 static inline sysinterval_t chTimeDiffX(systime_t start, systime_t end) {
-   return (sysinterval_t)((systime_t)(end - start));
+	return (sysinterval_t) ((systime_t) (end - start));
 }
 
 static inline systime_t chTimeAddX(systime_t systime, sysinterval_t interval) {
-     return systime + (systime_t)interval;
+	return systime + (systime_t) interval;
 }
 
-static void measurement_init(void)
-{
+static void measurement_init(void) {
 	measurement.time = chVTGetSystemTime();
 	measurement.tac = mc_interface_get_tachometer_value(false);
 
@@ -1423,20 +1332,19 @@ static void measurement_init(void)
 }
 
 // Returns current tachometer value each time
-static inline bool measurement_tick(int cur_tac)
-{
+static inline bool measurement_tick(int cur_tac) {
 	// Get new values
 	systime_t cur_time = chVTGetSystemTime();
 	sysinterval_t delayI = chTimeDiffX(measurement.time, cur_time);
 
-	if(delayI < measurement_delay) {
+	if (delayI < measurement_delay) {
 		measurement.updated = false;
 		return false;
 	}
 
 	measurement.updated = true;
 
-	float delayS = (float)delayI / (float)CH_CFG_ST_FREQUENCY;
+	float delayS = (float) delayI / (float) CH_CFG_ST_FREQUENCY;
 
 	// Tachometer speed
 	int tac_diff = cur_tac - measurement.tac;
@@ -1446,9 +1354,10 @@ static inline bool measurement_tick(int cur_tac)
 	float avgK = delayS / measurement_speed_filter_period_secs;
 	float prev_filtered_speed_tac_ms = measurement.filtered_speed_tac_ms;
 	UTILS_LP_FAST(measurement.filtered_speed_tac_ms, (cur_speed_tac_ms + measurement.speed_tac_ms) / 2, avgK);
-	
+
 	float cur_acceleration_tac_mss = (measurement.filtered_speed_tac_ms - prev_filtered_speed_tac_ms) / delayS;
-	UTILS_LP_FAST(measurement.filtered_acceleration_tac_mss, (cur_acceleration_tac_mss + measurement.acceleration_tac_mss) / 2, avgK);
+	UTILS_LP_FAST(measurement.filtered_acceleration_tac_mss,
+				  (cur_acceleration_tac_mss + measurement.acceleration_tac_mss) / 2, avgK);
 
 	measurement.time = cur_time;
 	measurement.tac = cur_tac;
@@ -1459,16 +1368,14 @@ static inline bool measurement_tick(int cur_tac)
 }
 
 
-static void antisex_init(void)
-{
+static void antisex_init(void) {
 	antisex_amps = 0;
 	antisex_amps_gain = 1;
 }
 
 // Called when the custom application is started. Start our
 // threads here and set up callbacks.
-void app_custom_start(void)
-{
+void app_custom_start(void) {
 	// Set guillotine switch to TTL output mode
 	set_adc2_pushpull();
 
@@ -1486,7 +1393,7 @@ void app_custom_start(void)
 	prev_printed_tac = INT_MIN / 2;
 	prev_printed_fault = FAULT_CODE_NONE;
 	alive_until = 0;
-    alive_forever = false;
+	alive_forever = false;
 	prev_abs_tac = 0;
 	prev_erpm = 0;
 	v_in_filtered = GET_INPUT_VOLTAGE();
@@ -1513,45 +1420,45 @@ void app_custom_start(void)
 
 	// Terminal commands for the VESC Tool terminal can be registered.
 	terminal_register_command_callback(
-		"set_zero",
-		"Move SkyPUFF zero point to this position",
-		"", terminal_set_zero);
+			"set_zero",
+			"Move SkyPUFF zero point to this position",
+			"", terminal_set_zero);
 	terminal_register_command_callback(
-		"move_zero",
-		"Dangerous! Move SkyPUFF zero position to specified meters delta",
-		"[meters]", terminal_move_zero);
+			"move_zero",
+			"Dangerous! Move SkyPUFF zero position to specified meters delta",
+			"[meters]", terminal_move_zero);
 	terminal_register_command_callback(
-		"skypuff",
-		"Print configuration",
-		"", terminal_print_conf);
+			"skypuff",
+			"Print configuration",
+			"", terminal_print_conf);
 	terminal_register_command_callback(
-		"get_conf",
-		"Send SkuPUFF serialized state and settings in the COMM_CUSTOM_APP_DATA payload",
-		"", terminal_get_conf);
+			"get_conf",
+			"Send SkuPUFF serialized state and settings in the COMM_CUSTOM_APP_DATA payload",
+			"", terminal_get_conf);
 	terminal_register_command_callback(
-		"example_conf",
-		"Set SkyPUFF model winch configuration",
-		"", terminal_set_example_conf);
+			"example_conf",
+			"Set SkyPUFF model winch configuration",
+			"", terminal_set_example_conf);
 	terminal_register_command_callback(
-		"alive_forever",
-		"Disable SkyPUFF communication timeout",
-		"", terminal_alive_forever);
+			"alive_forever",
+			"Disable SkyPUFF communication timeout",
+			"", terminal_alive_forever);
 	terminal_register_command_callback(
-		"set",
-		"Set new SkyPUFF state: MANUAL_BRAKING, UNWINDING, MANUAL_SLOW, MANUAL_SLOW_BACK, PRE_PULL, TAKEOFF_PULL, PULL, FAST_PULL",
-		"state", terminal_set_state);
+			"set",
+			"Set new SkyPUFF state: MANUAL_BRAKING, UNWINDING, MANUAL_SLOW, MANUAL_SLOW_BACK, PRE_PULL, TAKEOFF_PULL, PULL, FAST_PULL",
+			"state", terminal_set_state);
 	terminal_register_command_callback(
-		"force",
-		"Set SkyPUFF pull force",
-		"[kg]", terminal_set_pull_force);
+			"force",
+			"Set SkyPUFF pull force",
+			"[kg]", terminal_set_pull_force);
 	terminal_register_command_callback(
-		"adc2_tick",
-		"Cut the rope with guillotine",
-		"", terminal_adc2_tick);
+			"adc2_tick",
+			"Cut the rope with guillotine",
+			"", terminal_adc2_tick);
 	terminal_register_command_callback(
-		"measure_spool",
-		"Measure spool virtual mass spinning motor backward and forward with specified force during specified time and measurments with specified interval",
-		"<force (kg)> <apply time (seconds)> [0 / 1 - use smooth motor and antisex?]", terminal_measure_spool);
+			"measure_spool",
+			"Measure spool virtual mass spinning motor backward and forward with specified force during specified time and measurments with specified interval",
+			"<force (kg)> <apply time (seconds)> [0 / 1 - use smooth motor and antisex?]", terminal_measure_spool);
 
 #ifdef DEBUG_SMOOTH_MOTOR
 	terminal_register_command_callback(
@@ -1568,8 +1475,7 @@ void app_custom_start(void)
 
 // Called when the custom application is stopped. Stop our threads
 // and release callbacks.
-void app_custom_stop(void)
-{
+void app_custom_stop(void) {
 	commands_set_app_data_handler(NULL);
 	terminal_unregister_callback(terminal_set_zero);
 	terminal_unregister_callback(terminal_move_zero);
@@ -1584,36 +1490,30 @@ void app_custom_stop(void)
 #endif
 
 	stop_now = true;
-	while (is_running)
-	{
+	while (is_running) {
 		chThdSleepMilliseconds(1);
 	}
 	commands_printf("app_skypuff stopped");
 }
 
-void app_custom_configure(app_configuration *conf)
-{
-	(void)conf;
+void app_custom_configure(app_configuration *conf) {
+	(void) conf;
 }
 
 // Swithes to BRAKING / SLOWING if needed. Returns true if swithed
-static bool brake_or_slowing(const int cur_tac)
-{
+static bool brake_or_slowing(const int cur_tac) {
 	// We are in the braking range?
-	if (cur_tac >= -config.braking_length)
-	{
+	if (cur_tac >= -config.braking_length) {
 		braking(cur_tac);
 		return true;
 	}
 
 	// We are in the slowing range?
-	if (cur_tac >= -(config.braking_length + config.slowing_length))
-	{
+	if (cur_tac >= -(config.braking_length + config.slowing_length)) {
 		float erpm = mc_interface_get_rpm();
 
 		// Check direction and erpm to decide about slowing
-		if (cur_tac < 0 && erpm > config.slow_erpm)
-		{
+		if (cur_tac < 0 && erpm > config.slow_erpm) {
 			slowing(cur_tac, erpm);
 			return true;
 		}
@@ -1622,48 +1522,41 @@ static bool brake_or_slowing(const int cur_tac)
 	return false;
 }
 
-inline static void update_stats_check_faults(void)
-{
+inline static void update_stats_check_faults(void) {
 	UTILS_LP_FAST(v_in_filtered, GET_INPUT_VOLTAGE(), 0.1);
 	mc_fault_code f = mc_interface_get_fault();
 
-	if (f != prev_printed_fault)
-	{
+	if (f != prev_printed_fault) {
 		prev_printed_fault = f;
-        save_fault_to_reply_buf(f);
+		save_fault_to_reply_buf(f);
 	}
 }
 
-inline static void print_position_periodically(const int cur_tac, const int delay, const char *additional_msg)
-{
+inline static void print_position_periodically(const int cur_tac, const int delay, const char *additional_msg) {
 	// prolong delay if not moving
-	if (cur_tac == prev_printed_tac)
-	{
+	if (cur_tac == prev_printed_tac) {
 		prev_print = loop_step;
 		return;
 	}
 
-	if (loop_step - prev_print > delay)
-	{
+	if (loop_step - prev_print > delay) {
 		prev_print = loop_step;
 		prev_printed_tac = cur_tac;
 		float erpm = mc_interface_get_rpm();
 		commands_printf("%s: pos %.2fm (%d steps), speed %.1fms (%0.f ERPM)%s",
 						state_str(state),
-						(double)tac_steps_to_meters(cur_tac), cur_tac,
-						(double)erpm_to_ms(erpm), (double)erpm,
+						(double) tac_steps_to_meters(cur_tac), cur_tac,
+						(double) erpm_to_ms(erpm), (double) erpm,
 						additional_msg);
 	}
 }
 
-inline static bool is_filtered_speed_too_low(const float cur_erpm)
-{
+inline static bool is_filtered_speed_too_low(const float cur_erpm) {
 	UTILS_LP_FAST(erpm_filtered, cur_erpm, 0.01);
 
 	// Takes about 500 iterations if speed is about zero to reach filtered 0.1
-	if (fabs(erpm_filtered) < (double)0.1)
-	{
-		send_command_only(SK_COMM_TOO_SLOW_SPEED_UP);
+	if (fabs(erpm_filtered) < (double) 0.1) {
+		save_command_only(SK_COMM_TOO_SLOW_SPEED_UP);
 		commands_printf("%s: -- Too slow speed up", state_str(state));
 		return true;
 	}
@@ -1671,28 +1564,24 @@ inline static bool is_filtered_speed_too_low(const float cur_erpm)
 	return false;
 }
 
-inline static void brake_or_unwinding(const int cur_tac, const int abs_tac)
-{
+inline static void brake_or_unwinding(const int cur_tac, const int abs_tac) {
 	if (abs_tac <= config.braking_length)
 		braking(cur_tac);
 	else
 		unwinding(cur_tac);
 }
 
-inline static void brake_or_manual_brake(const int cur_tac, const int abs_tac)
-{
+inline static void brake_or_manual_brake(const int cur_tac, const int abs_tac) {
 	if (abs_tac <= config.braking_length)
 		braking(cur_tac);
 	else
 		manual_brake(cur_tac);
 }
 
-inline static bool is_unwinded_to_opposite_braking_zone(const int cur_tac, const float cur_erpm)
-{
+inline static bool is_unwinded_to_opposite_braking_zone(const int cur_tac, const float cur_erpm) {
 	if ((cur_erpm > 0 && cur_tac >= config.braking_length) ||
-		(cur_erpm < 0 && cur_tac <= -config.braking_length))
-	{
-		send_command_only(SK_COMM_UNWINDED_TO_OPPOSITE);
+		(cur_erpm < 0 && cur_tac <= -config.braking_length)) {
+		save_command_only(SK_COMM_UNWINDED_TO_OPPOSITE);
 #ifdef VERBOSE_TERMINAL
 		commands_printf("%s: -- Unwinded to opposite braking zone", state_str(state));
 #endif
@@ -1703,32 +1592,28 @@ inline static bool is_unwinded_to_opposite_braking_zone(const int cur_tac, const
 }
 
 // More prints to tweak slowing zone
-inline static void slowing_or_speed_up_print(const int cur_tac, const float cur_erpm, const float target_erpm)
-{
-	if (loop_step - prev_print > short_print_delay)
-	{
+inline static void slowing_or_speed_up_print(const int cur_tac, const float cur_erpm, const float target_erpm) {
+	if (loop_step - prev_print > short_print_delay) {
 		int distance_left = abs(cur_tac) - config.braking_length;
 		prev_print = loop_step;
 		commands_printf(
-			"%s: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), until %.1fms (%.0f ERPM), -- %.2fm to braking zone",
-			state_str(state),
-			(double)tac_steps_to_meters(cur_tac), cur_tac,
-			(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
-			(double)erpm_to_ms(target_erpm), (double)target_erpm,
-			(double)tac_steps_to_meters(distance_left));
+				"%s: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), until %.1fms (%.0f ERPM), -- %.2fm to braking zone",
+				state_str(state),
+				(double) tac_steps_to_meters(cur_tac), cur_tac,
+				(double) erpm_to_ms(cur_erpm), (double) cur_erpm,
+				(double) erpm_to_ms(target_erpm), (double) target_erpm,
+				(double) tac_steps_to_meters(distance_left));
 	}
 }
 
 // Control loop state machine
-inline static void process_states(const int cur_tac, const int abs_tac)
-{
+inline static void process_states(const int cur_tac, const int abs_tac) {
 	float cur_erpm, abs_erpm;
 	float cur_current, abs_current;
 
-	switch (state)
-	{
-	case UNINITIALIZED:
-		// Only SET_CONF will take us from here
+	switch (state) {
+		case UNINITIALIZED:
+			// Only SET_CONF will take us from here
 		{
 			const char *msg;
 
@@ -1740,424 +1625,405 @@ inline static void process_states(const int cur_tac, const int abs_tac)
 			// Always warn if UNINITIALIZED
 			print_position_periodically(cur_tac, long_print_delay, msg);
 		}
-		break;
-	case BRAKING:
-		// Moved to unwinding zone?
-		if (cur_tac < -config.braking_length)
-		{
-			braking_extension(cur_tac);
 			break;
-		}
-		// Moved to manual braking zone?
-		if (cur_tac > config.braking_length)
-		{
-			manual_brake(cur_tac);
-			break;
-		}
-
-		// Timeout thread will remove braking every second by default
-		// Apply brake again if position changed
-		if (timeout_has_timeout() && abs_tac != prev_abs_tac)
-			braking(cur_tac);
-		else
-			prev_abs_tac = abs_tac;
-
-#ifdef VERBOSE_TERMINAL
-		print_position_periodically(cur_tac, long_print_delay, "");
-#endif
-		break;
-	case BRAKING_EXTENSION:
-		// Moved to unwinding zone?
-		if (cur_tac < -(config.braking_length + config.braking_extension_length))
-		{
-			unwinding(cur_tac);
-			break;
-		}
-
-		// Moved to braking zone?
-		if (abs_tac <= config.braking_length) //todo is it legit to switch to braking_extension with positive tachometer?
-		{
-			braking(cur_tac);
-		}
-
-		// Timeout thread will remove braking every second by default
-		// Apply brake again if position changed
-		if (timeout_has_timeout() && abs_tac != prev_abs_tac)
-			braking_extension(cur_tac);
-		else
-			prev_abs_tac = abs_tac;
-
-#ifdef VERBOSE_TERMINAL
-		print_position_periodically(cur_tac, long_print_delay, "");
-#endif
-		break;
-	case MANUAL_BRAKING:
-		// Apply brake again on timeout and position change
-		if (timeout_has_timeout() && abs_tac != prev_abs_tac)
-			manual_brake(cur_tac);
-		else
-			prev_abs_tac = abs_tac;
-
-#ifdef VERBOSE_TERMINAL
-		print_position_periodically(cur_tac, long_print_delay,
-									!is_alive() ? ", -- Communication timeout" : "");
-#endif
-
-		break;
-	case UNWINDING:
-		// No system timeouts on this state
-		if (!(loop_step % timeout_reset_interval))
-			timeout_reset();
-
-		// Go braking or slowing?
-		if (brake_or_slowing(cur_tac))
-			break;
-
-		// Strong unwinding or normal?
-		if(measurement.updated) {
-			float amps = unwinding_current();
-			if(target_motor_state.param.current != amps)
-				pull_state(cur_tac, amps, UNWINDING, "");
-		}
-
-		// Use prev_abs_tac as max tachometer
-		if (abs_tac > prev_abs_tac)
-		{
-			// Print debug message if we are going out from slowing zone
-			int eof_slowing = config.braking_length + config.slowing_length;
-			if (prev_abs_tac < eof_slowing && abs_tac >= eof_slowing)
-			{
-				send_command_only(SK_COMM_UNWINDED_FROM_SLOWING);
-#ifdef VERBOSE_TERMINAL
-				commands_printf("%s: -- Unwinded from slowing zone %.2fm (%d steps)",
-								state_str(state),
-								(double)tac_steps_to_meters(cur_tac), cur_tac);
-#endif
+		case BRAKING:
+			// Moved to unwinding zone?
+			if (cur_tac < -config.braking_length) {
+				braking_extension(cur_tac);
+				break;
+			}
+			// Moved to manual braking zone?
+			if (cur_tac > config.braking_length) {
+				manual_brake(cur_tac);
+				break;
 			}
 
-			// Update maximum value of tachometer
-			prev_abs_tac = abs_tac;
-		}
-
-		// Going back more then config.rewinding_trigger_length?
-		if (abs_tac < prev_abs_tac - config.rewinding_trigger_length)
-		{
-			rewinding(cur_tac);
-			break;
-		}
-#ifdef VERBOSE_TERMINAL
-		print_position_periodically(cur_tac, long_print_delay, "");
-#endif
-		break;
-	case REWINDING:
-		// No system timeouts on this state
-		if (!(loop_step % timeout_reset_interval))
-			timeout_reset();
-
-		// Go braking or slowing?
-		if (brake_or_slowing(cur_tac))
-			break;
-
-		// Now use prev_abs_tac as min value
-		if (abs_tac < prev_abs_tac)
-			prev_abs_tac = abs_tac;
-
-		// Unwinding again?
-		if (abs_tac > prev_abs_tac + config.unwinding_trigger_length)
-			unwinding(cur_tac);
+			// Timeout thread will remove braking every second by default
+			// Apply brake again if position changed
+			if (timeout_has_timeout() && abs_tac != prev_abs_tac)
+				braking(cur_tac);
+			else
+				prev_abs_tac = abs_tac;
 
 #ifdef VERBOSE_TERMINAL
-		print_position_periodically(cur_tac, long_print_delay, "");
+			print_position_periodically(cur_tac, long_print_delay, "");
 #endif
-		break;
-	case SLOWING:
-		// We are in the braking range?
-		if (cur_tac >= -config.braking_length)
-		{
-			braking(cur_tac);
 			break;
-		}
+		case BRAKING_EXTENSION:
+			// Moved to unwinding zone?
+			if (cur_tac < -(config.braking_length + config.braking_extension_length)) {
+				unwinding(cur_tac);
+				break;
+			}
 
-		cur_erpm = mc_interface_get_rpm();
-		abs_erpm = fabs(cur_erpm);
+			// Moved to braking zone?
+			if (abs_tac <=
+				config.braking_length) //todo is it legit to switch to braking_extension with positive tachometer?
+			{
+				braking(cur_tac);
+			}
 
-		// Slow enough for PID speed?
-		if (abs_erpm < config.slow_erpm)
-		{
-			slow(cur_tac, cur_erpm);
-			break;
-		}
+			// Timeout thread will remove braking every second by default
+			// Apply brake again if position changed
+			if (timeout_has_timeout() && abs_tac != prev_abs_tac)
+				braking_extension(cur_tac);
+			else
+				prev_abs_tac = abs_tac;
 
 #ifdef VERBOSE_TERMINAL
-		slowing_or_speed_up_print(cur_tac, cur_erpm, config.slow_erpm);
+			print_position_periodically(cur_tac, long_print_delay, "");
 #endif
-		break;
-	case SLOW:
-		// No system timeouts on this state
-		if (!(loop_step % timeout_reset_interval))
-			timeout_reset();
-
-		cur_current = mc_interface_get_tot_current_directional_filtered();
-		abs_current = fabs(cur_current);
-		cur_erpm = mc_interface_get_rpm();
-
-		// If current above the limits - brake or unwinding
-		if (abs_current > config.slow_max_current)
-		{
-			send_pulling_too_high(abs_current);
-#ifdef VERBOSE_TERMINAL
-			commands_printf(
-				"SLOW: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), -- Pulling too high %.1fKg (%.1fA) is more %.1fKg (%.1fA)",
-				(double)tac_steps_to_meters(cur_tac), cur_tac,
-				(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
-				(double)(cur_current / config.amps_per_kg), (double)cur_current,
-				(double)(config.slow_max_current / config.amps_per_kg), (double)config.slow_max_current);
-#endif
-			brake_or_unwinding(cur_tac, abs_tac);
 			break;
-		}
+		case MANUAL_BRAKING:
+			// Apply brake again on timeout and position change
+			if (timeout_has_timeout() && abs_tac != prev_abs_tac)
+				manual_brake(cur_tac);
+			else
+				prev_abs_tac = abs_tac;
 
-		// Slowly rewinded more then opposite side of braking  zone?
-		if (is_unwinded_to_opposite_braking_zone(cur_tac, cur_erpm))
-		{
-			braking(cur_tac);
+#ifdef VERBOSE_TERMINAL
+			print_position_periodically(cur_tac, long_print_delay,
+										!is_alive() ? ", -- Communication timeout" : "");
+#endif
+
 			break;
-		}
+		case UNWINDING:
+			// No system timeouts on this state
+			if (!(loop_step % timeout_reset_interval))
+				timeout_reset();
 
+			// Go braking or slowing?
+			if (brake_or_slowing(cur_tac))
+				break;
+
+			// Strong unwinding or normal?
+			if (measurement.updated) {
+				float amps = unwinding_current();
+				if (target_motor_state.param.current != amps)
+					pull_state(cur_tac, amps, UNWINDING, "");
+			}
+
+			// Use prev_abs_tac as max tachometer
+			if (abs_tac > prev_abs_tac) {
+				// Print debug message if we are going out from slowing zone
+				int eof_slowing = config.braking_length + config.slowing_length;
+				if (prev_abs_tac < eof_slowing && abs_tac >= eof_slowing) {
+					save_command_only(SK_COMM_UNWINDED_FROM_SLOWING);
 #ifdef VERBOSE_TERMINAL
-		if (loop_step - prev_print > long_print_delay)
-		{
-			prev_print = loop_step;
-			commands_printf("SLOW: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), pull %.1fKg (%.1fA)",
-							(double)tac_steps_to_meters(cur_tac), cur_tac,
-							(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
-							(double)(cur_current / config.amps_per_kg), (double)cur_current);
-		}
+					commands_printf("%s: -- Unwinded from slowing zone %.2fm (%d steps)",
+									state_str(state),
+									(double)tac_steps_to_meters(cur_tac), cur_tac);
 #endif
-		break;
-	case MANUAL_SLOW_SPEED_UP:
-		// No system timeouts on this state
-		if (!(loop_step % timeout_reset_interval))
-			timeout_reset();
+				}
 
-		cur_erpm = mc_interface_get_rpm();
+				// Update maximum value of tachometer
+				prev_abs_tac = abs_tac;
+			}
 
-		// Stopped long enough?
-		if (is_filtered_speed_too_low(cur_erpm))
-		{
-			manual_brake(cur_tac);
+			// Going back more then config.rewinding_trigger_length?
+			if (abs_tac < prev_abs_tac - config.rewinding_trigger_length) {
+				rewinding(cur_tac);
+				break;
+			}
+#ifdef VERBOSE_TERMINAL
+			print_position_periodically(cur_tac, long_print_delay, "");
+#endif
 			break;
-		}
+		case REWINDING:
+			// No system timeouts on this state
+			if (!(loop_step % timeout_reset_interval))
+				timeout_reset();
 
-		// Fast enough for PID speed in zero direction?
-		if (cur_erpm >= config.manual_slow_erpm)
-		{
-			manual_slow(cur_tac, cur_erpm);
+			// Go braking or slowing?
+			if (brake_or_slowing(cur_tac))
+				break;
+
+			// Now use prev_abs_tac as min value
+			if (abs_tac < prev_abs_tac)
+				prev_abs_tac = abs_tac;
+
+			// Unwinding again?
+			if (abs_tac > prev_abs_tac + config.unwinding_trigger_length)
+				unwinding(cur_tac);
+
+#ifdef VERBOSE_TERMINAL
+			print_position_periodically(cur_tac, long_print_delay, "");
+#endif
 			break;
-		}
+		case SLOWING:
+			// We are in the braking range?
+			if (cur_tac >= -config.braking_length) {
+				braking(cur_tac);
+				break;
+			}
+
+			cur_erpm = mc_interface_get_rpm();
+			abs_erpm = fabs(cur_erpm);
+
+			// Slow enough for PID speed?
+			if (abs_erpm < config.slow_erpm) {
+				slow(cur_tac, cur_erpm);
+				break;
+			}
 
 #ifdef VERBOSE_TERMINAL
-		slowing_or_speed_up_print(cur_tac, cur_erpm, config.manual_slow_erpm);
+			slowing_or_speed_up_print(cur_tac, cur_erpm, config.slow_erpm);
 #endif
-		break;
-	case MANUAL_SLOW_BACK_SPEED_UP:
-		// No system timeouts on this state
-		if (!(loop_step % timeout_reset_interval))
-			timeout_reset();
-
-		cur_erpm = mc_interface_get_rpm();
-
-		// Stopped long enough?
-		if (is_filtered_speed_too_low(cur_erpm))
-		{
-			manual_brake(cur_tac);
 			break;
-		}
+		case SLOW:
+			// No system timeouts on this state
+			if (!(loop_step % timeout_reset_interval))
+				timeout_reset();
 
-		// Fast enough for PID speed in opposite from zero direction?
-		if (cur_erpm <= -config.manual_slow_erpm)
-		{
-			manual_slow_back(cur_tac, cur_erpm);
+			cur_current = mc_interface_get_tot_current_directional_filtered();
+			abs_current = fabs(cur_current);
+			cur_erpm = mc_interface_get_rpm();
+
+			// If current above the limits - brake or unwinding
+			if (abs_current > config.slow_max_current) {
+				save_pulling_too_high_error(abs_current);
+#ifdef VERBOSE_TERMINAL
+				commands_printf(
+					"SLOW: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), -- Pulling too high %.1fKg (%.1fA) is more %.1fKg (%.1fA)",
+					(double)tac_steps_to_meters(cur_tac), cur_tac,
+					(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
+					(double)(cur_current / config.amps_per_kg), (double)cur_current,
+					(double)(config.slow_max_current / config.amps_per_kg), (double)config.slow_max_current);
+#endif
+				brake_or_unwinding(cur_tac, abs_tac);
+				break;
+			}
+
+			// Slowly rewinded more then opposite side of braking  zone?
+			if (is_unwinded_to_opposite_braking_zone(cur_tac, cur_erpm)) {
+				braking(cur_tac);
+				break;
+			}
+
+#ifdef VERBOSE_TERMINAL
+			if (loop_step - prev_print > long_print_delay)
+			{
+				prev_print = loop_step;
+				commands_printf("SLOW: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), pull %.1fKg (%.1fA)",
+								(double)tac_steps_to_meters(cur_tac), cur_tac,
+								(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
+								(double)(cur_current / config.amps_per_kg), (double)cur_current);
+			}
+#endif
 			break;
-		}
+		case MANUAL_SLOW_SPEED_UP:
+			// No system timeouts on this state
+			if (!(loop_step % timeout_reset_interval))
+				timeout_reset();
+
+			cur_erpm = mc_interface_get_rpm();
+
+			// Stopped long enough?
+			if (is_filtered_speed_too_low(cur_erpm)) {
+				manual_brake(cur_tac);
+				break;
+			}
+
+			// Fast enough for PID speed in zero direction?
+			if (cur_erpm >= config.manual_slow_erpm) {
+				manual_slow(cur_tac, cur_erpm);
+				break;
+			}
 
 #ifdef VERBOSE_TERMINAL
-		slowing_or_speed_up_print(cur_tac, cur_erpm, config.manual_slow_erpm);
+			slowing_or_speed_up_print(cur_tac, cur_erpm, config.manual_slow_erpm);
 #endif
-		break;
-	case MANUAL_SLOW:
-		// No system timeouts on this state
-		if (!(loop_step % timeout_reset_interval))
-			timeout_reset();
-
-		cur_current = mc_interface_get_tot_current_directional_filtered();
-		abs_current = fabs(cur_current);
-		cur_erpm = mc_interface_get_rpm();
-
-		// If current is above the limits
-		if (abs_current > config.manual_slow_max_current)
-		{
-			send_pulling_too_high(abs_current);
-#ifdef VERBOSE_TERMINAL
-			commands_printf(
-				"MANUAL_SLOW: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), -- Pulling too high %.1fKg (%.1fA) is more %.1fKg (%.1fA)",
-				(double)tac_steps_to_meters(cur_tac), cur_tac,
-				(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
-				(double)(cur_current / config.amps_per_kg), (double)cur_current,
-				(double)(config.manual_slow_max_current / config.amps_per_kg), (double)config.manual_slow_max_current);
-#endif
-			brake_or_manual_brake(cur_tac, abs_tac);
 			break;
-		}
+		case MANUAL_SLOW_BACK_SPEED_UP:
+			// No system timeouts on this state
+			if (!(loop_step % timeout_reset_interval))
+				timeout_reset();
+
+			cur_erpm = mc_interface_get_rpm();
+
+			// Stopped long enough?
+			if (is_filtered_speed_too_low(cur_erpm)) {
+				manual_brake(cur_tac);
+				break;
+			}
+
+			// Fast enough for PID speed in opposite from zero direction?
+			if (cur_erpm <= -config.manual_slow_erpm) {
+				manual_slow_back(cur_tac, cur_erpm);
+				break;
+			}
 
 #ifdef VERBOSE_TERMINAL
-		if (loop_step - prev_print > long_print_delay)
-		{
-			prev_print = loop_step;
-			commands_printf("MANUAL_SLOW: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), pull %.1fKg (%.1fA)",
-							(double)tac_steps_to_meters(cur_tac), cur_tac,
-							(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
-							(double)(cur_current / config.amps_per_kg), (double)cur_current);
-		}
+			slowing_or_speed_up_print(cur_tac, cur_erpm, config.manual_slow_erpm);
 #endif
-		break;
-	case MANUAL_SLOW_BACK:
-		// No system timeouts on this state
-		if (!(loop_step % timeout_reset_interval))
-			timeout_reset();
-
-		cur_current = mc_interface_get_tot_current_directional_filtered();
-		abs_current = fabs(cur_current);
-		cur_erpm = mc_interface_get_rpm();
-
-		// If current is above the limits
-		if (abs_current > config.manual_slow_max_current)
-		{
-			send_pulling_too_high(abs_current);
-#ifdef VERBOSE_TERMINAL
-			commands_printf(
-				"MANUAL_SLOW_BACK: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), -- Pulling too high %.1fKg (%.1fA) is more %.1fKg (%.1fA)",
-				(double)tac_steps_to_meters(cur_tac), cur_tac,
-				(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
-				(double)(cur_current / config.amps_per_kg), (double)cur_current,
-				(double)(config.manual_slow_max_current / config.amps_per_kg), (double)config.manual_slow_max_current);
-#endif
-			brake_or_manual_brake(cur_tac, abs_tac);
 			break;
-		}
+		case MANUAL_SLOW:
+			// No system timeouts on this state
+			if (!(loop_step % timeout_reset_interval))
+				timeout_reset();
+
+			cur_current = mc_interface_get_tot_current_directional_filtered();
+			abs_current = fabs(cur_current);
+			cur_erpm = mc_interface_get_rpm();
+
+			// If current is above the limits
+			if (abs_current > config.manual_slow_max_current) {
+				save_pulling_too_high_error(abs_current);
+#ifdef VERBOSE_TERMINAL
+				commands_printf(
+					"MANUAL_SLOW: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), -- Pulling too high %.1fKg (%.1fA) is more %.1fKg (%.1fA)",
+					(double)tac_steps_to_meters(cur_tac), cur_tac,
+					(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
+					(double)(cur_current / config.amps_per_kg), (double)cur_current,
+					(double)(config.manual_slow_max_current / config.amps_per_kg), (double)config.manual_slow_max_current);
+#endif
+				brake_or_manual_brake(cur_tac, abs_tac);
+				break;
+			}
 
 #ifdef VERBOSE_TERMINAL
-		if (loop_step - prev_print > long_print_delay)
-		{
-			prev_print = loop_step;
-			commands_printf("MANUAL_SLOW_BACK: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), pull %.1fKg (%.1fA)",
-							(double)tac_steps_to_meters(cur_tac), cur_tac,
-							(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
-							(double)(cur_current / config.amps_per_kg), (double)cur_current);
-		}
+			if (loop_step - prev_print > long_print_delay)
+			{
+				prev_print = loop_step;
+				commands_printf("MANUAL_SLOW: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), pull %.1fKg (%.1fA)",
+								(double)tac_steps_to_meters(cur_tac), cur_tac,
+								(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
+								(double)(cur_current / config.amps_per_kg), (double)cur_current);
+			}
 #endif
-		break;
-	case PRE_PULL:
-		// No system timeouts on this state
-		if (!(loop_step % timeout_reset_interval))
-			timeout_reset();
-
-		// Go braking or slowing?
-		if (brake_or_slowing(cur_tac))
 			break;
+		case MANUAL_SLOW_BACK:
+			// No system timeouts on this state
+			if (!(loop_step % timeout_reset_interval))
+				timeout_reset();
 
-		// Enough time to tight the rope?
-		int timeout_step = state_start_time + config.pre_pull_timeout;
-		if (loop_step == timeout_step)
-		{
-			send_command_only(SK_COMM_DETECTING_MOTION);
-#ifdef VERBOSE_TERMINAL
-			float erpm = mc_interface_get_rpm();
-			commands_printf("%s: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), -- Pre pull %.1fs timeout passed, saving position",
-							state_str(state),
-							(double)tac_steps_to_meters(cur_tac), cur_tac,
-							(double)erpm_to_ms(erpm), (double)erpm,
-							(double)config.pre_pull_timeout / (double)1000.0);
-#endif
-			prev_abs_tac = abs_tac;
-		}
+			cur_current = mc_interface_get_tot_current_directional_filtered();
+			abs_current = fabs(cur_current);
+			cur_erpm = mc_interface_get_rpm();
 
-		// Timeout passed and moved enough to takeoff?
-		if (loop_step > timeout_step && abs(prev_abs_tac - abs_tac) >= config.takeoff_trigger_length)
-		{
+			// If current is above the limits
+			if (abs_current > config.manual_slow_max_current) {
+				save_pulling_too_high_error(abs_current);
 #ifdef VERBOSE_TERMINAL
-			float erpm = mc_interface_get_rpm();
-			commands_printf("%s: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), -- Motion %.2fm (%d steps) detected",
-							state_str(state),
-							(double)tac_steps_to_meters(cur_tac), cur_tac,
-							(double)erpm_to_ms(erpm), (double)erpm,
-							(double)tac_steps_to_meters(config.takeoff_trigger_length), config.takeoff_trigger_length);
+				commands_printf(
+					"MANUAL_SLOW_BACK: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), -- Pulling too high %.1fKg (%.1fA) is more %.1fKg (%.1fA)",
+					(double)tac_steps_to_meters(cur_tac), cur_tac,
+					(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
+					(double)(cur_current / config.amps_per_kg), (double)cur_current,
+					(double)(config.manual_slow_max_current / config.amps_per_kg), (double)config.manual_slow_max_current);
 #endif
-			takeoff_pull(cur_tac);
+				brake_or_manual_brake(cur_tac, abs_tac);
+				break;
+			}
+
+#ifdef VERBOSE_TERMINAL
+			if (loop_step - prev_print > long_print_delay)
+			{
+				prev_print = loop_step;
+				commands_printf("MANUAL_SLOW_BACK: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), pull %.1fKg (%.1fA)",
+								(double)tac_steps_to_meters(cur_tac), cur_tac,
+								(double)erpm_to_ms(cur_erpm), (double)cur_erpm,
+								(double)(cur_current / config.amps_per_kg), (double)cur_current);
+			}
+#endif
 			break;
-		}
+		case PRE_PULL:
+			// No system timeouts on this state
+			if (!(loop_step % timeout_reset_interval))
+				timeout_reset();
+
+			// Go braking or slowing?
+			if (brake_or_slowing(cur_tac))
+				break;
+
+			// Enough time to tight the rope?
+			int timeout_step = state_start_time + config.pre_pull_timeout;
+			if (loop_step == timeout_step) {
+				save_command_only(SK_COMM_DETECTING_MOTION);
+#ifdef VERBOSE_TERMINAL
+				float erpm = mc_interface_get_rpm();
+				commands_printf("%s: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), -- Pre pull %.1fs timeout passed, saving position",
+								state_str(state),
+								(double)tac_steps_to_meters(cur_tac), cur_tac,
+								(double)erpm_to_ms(erpm), (double)erpm,
+								(double)config.pre_pull_timeout / (double)1000.0);
+#endif
+				prev_abs_tac = abs_tac;
+			}
+
+			// Timeout passed and moved enough to takeoff?
+			if (loop_step > timeout_step && abs(prev_abs_tac - abs_tac) >= config.takeoff_trigger_length) {
+#ifdef VERBOSE_TERMINAL
+				float erpm = mc_interface_get_rpm();
+				commands_printf("%s: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), -- Motion %.2fm (%d steps) detected",
+								state_str(state),
+								(double)tac_steps_to_meters(cur_tac), cur_tac,
+								(double)erpm_to_ms(erpm), (double)erpm,
+								(double)tac_steps_to_meters(config.takeoff_trigger_length), config.takeoff_trigger_length);
+#endif
+				takeoff_pull(cur_tac);
+				break;
+			}
 
 #ifdef VERBOSE_TERMINAL
-		print_position_periodically(cur_tac, long_print_delay, "");
+			print_position_periodically(cur_tac, long_print_delay, "");
 #endif
-		break;
-	case TAKEOFF_PULL:
-		// No system timeouts on this state
-		if (!(loop_step % timeout_reset_interval))
-			timeout_reset();
-
-		// Go braking or slowing?
-		if (brake_or_slowing(cur_tac))
 			break;
+		case TAKEOFF_PULL:
+			// No system timeouts on this state
+			if (!(loop_step % timeout_reset_interval))
+				timeout_reset();
 
-		// Enough time of weak takeoff pull?
-		if (loop_step >= state_start_time + config.takeoff_period)
-		{
+			// Go braking or slowing?
+			if (brake_or_slowing(cur_tac))
+				break;
+
+			// Enough time of weak takeoff pull?
+			if (loop_step >= state_start_time + config.takeoff_period) {
 #ifdef VERBOSE_TERMINAL
-			float erpm = mc_interface_get_rpm();
-			commands_printf("%s: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), -- Takeoff %.1fs timeout passed",
-							state_str(state),
-							(double)tac_steps_to_meters(cur_tac), cur_tac,
-							(double)erpm_to_ms(erpm), (double)erpm,
-							(double)config.takeoff_period / (double)1000.0);
+				float erpm = mc_interface_get_rpm();
+				commands_printf("%s: pos %.2fm (%d steps), speed %.1fms (%.0f ERPM), -- Takeoff %.1fs timeout passed",
+								state_str(state),
+								(double)tac_steps_to_meters(cur_tac), cur_tac,
+								(double)erpm_to_ms(erpm), (double)erpm,
+								(double)config.takeoff_period / (double)1000.0);
 #endif
-			pull(cur_tac);
+				pull(cur_tac);
+				break;
+			}
+
+#ifdef VERBOSE_TERMINAL
+			print_position_periodically(cur_tac, long_print_delay, "");
+#endif
 			break;
-		}
+		case PULL:
+		case FAST_PULL:
+			// No system timeouts on this state
+			if (!(loop_step % timeout_reset_interval))
+				timeout_reset();
+
+			// Go braking or slowing?
+			if (brake_or_slowing(cur_tac))
+				break;
 
 #ifdef VERBOSE_TERMINAL
-		print_position_periodically(cur_tac, long_print_delay, "");
+			print_position_periodically(cur_tac, long_print_delay, "");
 #endif
-		break;
-	case PULL:
-	case FAST_PULL:
-		// No system timeouts on this state
-		if (!(loop_step % timeout_reset_interval))
-			timeout_reset();
-
-		// Go braking or slowing?
-		if (brake_or_slowing(cur_tac))
 			break;
+		case MANUAL_DEBUG_SMOOTH:
+			// No system timeouts on this state
+			if (!(loop_step % timeout_reset_interval))
+				timeout_reset();
 
-#ifdef VERBOSE_TERMINAL
-		print_position_periodically(cur_tac, long_print_delay, "");
-#endif
-		break;
-	case MANUAL_DEBUG_SMOOTH:
-		// No system timeouts on this state
-		if (!(loop_step % timeout_reset_interval))
-			timeout_reset();
-
-		print_position_periodically(cur_tac, long_print_delay, "");
-		break;
-	default:
-		commands_printf("SkyPUFF: unknown control loop state, exiting!");
-		stop_now = true;
+			print_position_periodically(cur_tac, long_print_delay, "");
+			break;
+		default:
+			commands_printf("SkyPUFF: unknown control loop state, exiting!");
+			stop_now = true;
 	}
 }
 
-inline static void print_conf(const int cur_tac)
-{
+inline static void print_conf(const int cur_tac) {
 	float erpm;
 	float motor_amps;
 	float battery_amps;
@@ -2166,433 +2032,467 @@ inline static void print_conf(const int cur_tac)
 	power = v_in_filtered * battery_amps;
 
 	commands_printf("VESC additional info:");
-	commands_printf("  wheel diameter: %.2fmm", (double)(mc_conf->si_wheel_diameter * 1000));
+	commands_printf("  wheel diameter: %.2fmm", (double) (mc_conf->si_wheel_diameter * 1000));
 	commands_printf("  motor poles: %dp", mc_conf->si_motor_poles);
-	commands_printf("  gear ratio: %.5f", (double)mc_conf->si_gear_ratio);
+	commands_printf("  gear ratio: %.5f", (double) mc_conf->si_gear_ratio);
 
 	commands_printf("SkyPUFF configuration version %s:", sk_command_str(SK_COMM_SETTINGS_V1));
-	commands_printf("  amperes per 1kg force: %.1fAKg", (double)config.amps_per_kg);
-	commands_printf("  rope gauge max value: %.1fms", (double)config.max_speed_ms);
-	commands_printf("  pull applying period: %.1fs (%d loops)", (double)config.pull_applying_period / (double)1000.0, config.pull_applying_period);
-	commands_printf("  braking applying period: %.1fs (%d loops)", (double)config.braking_applying_period / (double)1000.0, config.braking_applying_period);
-	commands_printf("  rope length: %.2fm (%d steps)", (double)tac_steps_to_meters(config.rope_length), config.rope_length);
-	commands_printf("  braking range: %.2fm (%d steps)", (double)tac_steps_to_meters(config.braking_length), config.braking_length);
-	commands_printf("  braking extension range: %.2fm (%d steps)", (double)tac_steps_to_meters(config.braking_extension_length), config.braking_extension_length);
-	commands_printf("  slowing range: %.2fm (%d steps)", (double)tac_steps_to_meters(config.slowing_length), config.slowing_length);
-	commands_printf("  rewinding trigger range: %.2fm (%d steps)", (double)tac_steps_to_meters(config.rewinding_trigger_length), config.rewinding_trigger_length);
-	commands_printf("  unwinding trigger range: %.2fm (%d steps)", (double)tac_steps_to_meters(config.unwinding_trigger_length), config.unwinding_trigger_length);
-	commands_printf("  brake force: %.2fkg (%.1fA)", (double)(config.brake_current / config.amps_per_kg), (double)config.brake_current);
-	commands_printf("  manual brake force: %.2fkg (%.1fA)", (double)(config.manual_brake_current / config.amps_per_kg), (double)config.manual_brake_current);
-	commands_printf("  unwinding force: %.2fkg (%.1fA)", (double)(config.unwinding_current / config.amps_per_kg), (double)config.unwinding_current);
-	commands_printf("  unwinding strong force: %.2fkg (%.1fA)", (double)(config.unwinding_strong_current / config.amps_per_kg), (double)config.unwinding_strong_current);
-	commands_printf("  unwinding strong speed: %.1fms (%.0f ERPM)", (double)erpm_to_ms(config.unwinding_strong_erpm), (double)config.unwinding_strong_erpm);
-	commands_printf("  rewinding force: %.2fkg (%.1fA)", (double)(config.rewinding_current / config.amps_per_kg), (double)config.rewinding_current);
-	commands_printf("  slowing brake force: %.2fkg (%.1fA)", (double)(config.slowing_current / config.amps_per_kg), (double)config.slowing_current);
-	commands_printf("  slow speed: %.1fms (%.0f ERPM)", (double)erpm_to_ms(config.slow_erpm), (double)config.slow_erpm);
-	commands_printf("  maximum slow force: %.2fkg (%.1fA)", (double)(config.slow_max_current / config.amps_per_kg), (double)config.slow_max_current);
-	commands_printf("  manual slow max force: %.2fkg (%.1fA)", (double)(config.manual_slow_max_current / config.amps_per_kg), (double)config.manual_slow_max_current);
-	commands_printf("  manual slow speed up force: %.2fkg (%.1fA)", (double)(config.manual_slow_speed_up_current / config.amps_per_kg), (double)config.manual_slow_speed_up_current);
-	commands_printf("  manual slow speed: %.1fms (%.0f ERPM)", (double)erpm_to_ms(config.manual_slow_erpm), (double)config.manual_slow_erpm);
+	commands_printf("  amperes per 1kg force: %.1fAKg", (double) config.amps_per_kg);
+	commands_printf("  rope gauge max value: %.1fms", (double) config.max_speed_ms);
+	commands_printf("  pull applying period: %.1fs (%d loops)", (double) config.pull_applying_period / (double) 1000.0,
+					config.pull_applying_period);
+	commands_printf("  braking applying period: %.1fs (%d loops)",
+					(double) config.braking_applying_period / (double) 1000.0, config.braking_applying_period);
+	commands_printf("  rope length: %.2fm (%d steps)", (double) tac_steps_to_meters(config.rope_length),
+					config.rope_length);
+	commands_printf("  braking range: %.2fm (%d steps)", (double) tac_steps_to_meters(config.braking_length),
+					config.braking_length);
+	commands_printf("  braking extension range: %.2fm (%d steps)",
+					(double) tac_steps_to_meters(config.braking_extension_length), config.braking_extension_length);
+	commands_printf("  slowing range: %.2fm (%d steps)", (double) tac_steps_to_meters(config.slowing_length),
+					config.slowing_length);
+	commands_printf("  rewinding trigger range: %.2fm (%d steps)",
+					(double) tac_steps_to_meters(config.rewinding_trigger_length), config.rewinding_trigger_length);
+	commands_printf("  unwinding trigger range: %.2fm (%d steps)",
+					(double) tac_steps_to_meters(config.unwinding_trigger_length), config.unwinding_trigger_length);
+	commands_printf("  brake force: %.2fkg (%.1fA)", (double) (config.brake_current / config.amps_per_kg),
+					(double) config.brake_current);
+	commands_printf("  manual brake force: %.2fkg (%.1fA)", (double) (config.manual_brake_current / config.amps_per_kg),
+					(double) config.manual_brake_current);
+	commands_printf("  unwinding force: %.2fkg (%.1fA)", (double) (config.unwinding_current / config.amps_per_kg),
+					(double) config.unwinding_current);
+	commands_printf("  unwinding strong force: %.2fkg (%.1fA)",
+					(double) (config.unwinding_strong_current / config.amps_per_kg),
+					(double) config.unwinding_strong_current);
+	commands_printf("  unwinding strong speed: %.1fms (%.0f ERPM)", (double) erpm_to_ms(config.unwinding_strong_erpm),
+					(double) config.unwinding_strong_erpm);
+	commands_printf("  rewinding force: %.2fkg (%.1fA)", (double) (config.rewinding_current / config.amps_per_kg),
+					(double) config.rewinding_current);
+	commands_printf("  slowing brake force: %.2fkg (%.1fA)", (double) (config.slowing_current / config.amps_per_kg),
+					(double) config.slowing_current);
+	commands_printf("  slow speed: %.1fms (%.0f ERPM)", (double) erpm_to_ms(config.slow_erpm),
+					(double) config.slow_erpm);
+	commands_printf("  maximum slow force: %.2fkg (%.1fA)", (double) (config.slow_max_current / config.amps_per_kg),
+					(double) config.slow_max_current);
+	commands_printf("  manual slow max force: %.2fkg (%.1fA)",
+					(double) (config.manual_slow_max_current / config.amps_per_kg),
+					(double) config.manual_slow_max_current);
+	commands_printf("  manual slow speed up force: %.2fkg (%.1fA)",
+					(double) (config.manual_slow_speed_up_current / config.amps_per_kg),
+					(double) config.manual_slow_speed_up_current);
+	commands_printf("  manual slow speed: %.1fms (%.0f ERPM)", (double) erpm_to_ms(config.manual_slow_erpm),
+					(double) config.manual_slow_erpm);
 
-	commands_printf("  pull force: %.2fkg (%.1fA)", (double)(config.pull_current / config.amps_per_kg), (double)config.pull_current);
-	commands_printf("  takeoff trigger range: %.2fm (%d steps)", (double)tac_steps_to_meters(config.takeoff_trigger_length), config.takeoff_trigger_length);
-	commands_printf("  pre pull timeout: %.1fs (%d loops)", (double)config.pre_pull_timeout / (double)1000.0, config.pre_pull_timeout);
-	commands_printf("  takeoff period: %.1fs (%d loops)", (double)config.takeoff_period / (double)1000.0, config.takeoff_period);
-	commands_printf("  pre pull coefficient: %.0f%% (%.2fkg, %.5f)", (double)config.pre_pull_k * (double)100.0, (double)(config.pull_current / config.amps_per_kg * config.pre_pull_k), (double)config.pre_pull_k);
-	commands_printf("  takeoff pull coefficient: %.0f%% (%.2fkg, %.5f)", (double)config.takeoff_pull_k * (double)100.0, (double)(config.pull_current / config.amps_per_kg * config.takeoff_pull_k), (double)config.takeoff_pull_k);
-	commands_printf("  fast pull coefficient: %.0f%% (%.2fkg, %.5f)", (double)config.fast_pull_k * (double)100.0, (double)(config.pull_current / config.amps_per_kg * config.fast_pull_k), (double)config.fast_pull_k);
+	commands_printf("  pull force: %.2fkg (%.1fA)", (double) (config.pull_current / config.amps_per_kg),
+					(double) config.pull_current);
+	commands_printf("  takeoff trigger range: %.2fm (%d steps)",
+					(double) tac_steps_to_meters(config.takeoff_trigger_length), config.takeoff_trigger_length);
+	commands_printf("  pre pull timeout: %.1fs (%d loops)", (double) config.pre_pull_timeout / (double) 1000.0,
+					config.pre_pull_timeout);
+	commands_printf("  takeoff period: %.1fs (%d loops)", (double) config.takeoff_period / (double) 1000.0,
+					config.takeoff_period);
+	commands_printf("  pre pull coefficient: %.0f%% (%.2fkg, %.5f)", (double) config.pre_pull_k * (double) 100.0,
+					(double) (config.pull_current / config.amps_per_kg * config.pre_pull_k),
+					(double) config.pre_pull_k);
+	commands_printf("  takeoff pull coefficient: %.0f%% (%.2fkg, %.5f)",
+					(double) config.takeoff_pull_k * (double) 100.0,
+					(double) (config.pull_current / config.amps_per_kg * config.takeoff_pull_k),
+					(double) config.takeoff_pull_k);
+	commands_printf("  fast pull coefficient: %.0f%% (%.2fkg, %.5f)", (double) config.fast_pull_k * (double) 100.0,
+					(double) (config.pull_current / config.amps_per_kg * config.fast_pull_k),
+					(double) config.fast_pull_k);
 
-	commands_printf("  antisex activation min pull: %.2fkg (%.1fA)", (double)(config.antisex_min_pull_amps / config.amps_per_kg), (double)config.antisex_min_pull_amps);
-	commands_printf("  antisex reducing force: %.2fkg (%.1fA)", (double)(config.antisex_reduce_amps / config.amps_per_kg), (double)config.antisex_reduce_amps);
-	commands_printf("  antisex acceleration on: %.2fms/s^2", (double)config.antisex_acceleration_on_mss);
-	commands_printf("  antisex acceleration off: %.2fms/s^2", (double)config.antisex_acceleration_off_mss);
-	commands_printf("  antisex max applying period: %.1fs", (double)config.antisex_max_period_ms / (double)1000.0);
+	commands_printf("  antisex activation min pull: %.2fkg (%.1fA)",
+					(double) (config.antisex_min_pull_amps / config.amps_per_kg),
+					(double) config.antisex_min_pull_amps);
+	commands_printf("  antisex reducing force: %.2fkg (%.1fA)",
+					(double) (config.antisex_reduce_amps / config.amps_per_kg), (double) config.antisex_reduce_amps);
+	commands_printf("  antisex acceleration on: %.2fms/s^2", (double) config.antisex_acceleration_on_mss);
+	commands_printf("  antisex acceleration off: %.2fms/s^2", (double) config.antisex_acceleration_off_mss);
+	commands_printf("  antisex max applying period: %.1fs", (double) config.antisex_max_period_ms / (double) 1000.0);
 
 	commands_printf("SkyPUFF state:");
-	commands_printf("  %s: pos %.2fm (%d steps), speed %.1fm/s (%.1f ERPM)", state_str(state), (double)tac_steps_to_meters(cur_tac), cur_tac, (double)erpm_to_ms(erpm), (double)erpm);
-	commands_printf("  motor state %s: %.2fkg (%.1fA), battery: %.1fA %.1fV, power: %.1fW", motor_mode_str(current_motor_state.mode), (double)(motor_amps / config.amps_per_kg), (double)motor_amps, (double)battery_amps, (double)v_in_filtered, (double)power);
+	commands_printf("  %s: pos %.2fm (%d steps), speed %.1fm/s (%.1f ERPM)", state_str(state),
+					(double) tac_steps_to_meters(cur_tac), cur_tac, (double) erpm_to_ms(erpm), (double) erpm);
+	commands_printf("  motor state %s: %.2fkg (%.1fA), battery: %.1fA %.1fV, power: %.1fW",
+					motor_mode_str(current_motor_state.mode), (double) (motor_amps / config.amps_per_kg),
+					(double) motor_amps, (double) battery_amps, (double) v_in_filtered, (double) power);
 	commands_printf("  timeout reset interval: %dms", timeout_reset_interval);
-	commands_printf("  calculated force changing speed: %.2fKg/sec (%.1fA/sec)", (double)(amps_per_sec / config.amps_per_kg), (double)amps_per_sec);
-	commands_printf("  loop counter: %d, alive until: %d, %s", loop_step, alive_until, !is_alive() ? "communication timeout" : "no timeout");
+	commands_printf("  calculated force changing speed: %.2fKg/sec (%.1fA/sec)",
+					(double) (amps_per_sec / config.amps_per_kg), (double) amps_per_sec);
+	commands_printf("  loop counter: %d, alive until: %d, %s", loop_step, alive_until,
+					!is_alive() ? "communication timeout" : "no timeout");
 }
 
-inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
-{
+inline static void process_terminal_commands(int *cur_tac, int *abs_tac) {
 	// In case of new command during next switch
 	skypuff_terminal_command prev_command = terminal_command;
 
-	switch (terminal_command)
-	{
-	case DO_NOTHING:
-		return;
+	switch (terminal_command) {
+		case DO_NOTHING:
+			return;
 
-	case SET_ZERO:
-		switch (state)
-		{
-		case UNINITIALIZED:
-		case BRAKING:
-		case BRAKING_EXTENSION:
-		case MANUAL_BRAKING:
-		{
-			mc_interface_get_tachometer_value(true);
-			prev_abs_tac = 0;
-			prev_printed_tac = 0;
-			*cur_tac = 0;
-			*abs_tac = 0;
-			send_command_only(SK_COMM_ZERO_IS_SET);
+		case SET_ZERO:
+			switch (state) {
+				case UNINITIALIZED:
+				case BRAKING:
+				case BRAKING_EXTENSION:
+				case MANUAL_BRAKING: {
+					mc_interface_get_tachometer_value(true);
+					prev_abs_tac = 0;
+					prev_printed_tac = 0;
+					*cur_tac = 0;
+					*abs_tac = 0;
+					save_command_only(SK_COMM_ZERO_IS_SET);
 #ifdef VERBOSE_TERMINAL
-			float erpm = mc_interface_get_rpm();
-			commands_printf("%s: pos %.2fm (%d steps), speed %.1fms (%0.f ERPM), -- Zero is set",
-							state_str(state),
-							(double)tac_steps_to_meters(*cur_tac), *cur_tac,
-							(double)erpm_to_ms(erpm), (double)erpm);
+					float erpm = mc_interface_get_rpm();
+					commands_printf("%s: pos %.2fm (%d steps), speed %.1fms (%0.f ERPM), -- Zero is set",
+									state_str(state),
+									(double)tac_steps_to_meters(*cur_tac), *cur_tac,
+									(double)erpm_to_ms(erpm), (double)erpm);
 #endif
-		}
-		break;
-
-		default:
-			commands_printf("%s: -- Can't set zero -- Only possible from UNINITIALIZED or BRAKING states",
-							state_str(state));
-			break;
-		}
-		break;
-	case SET_MANUAL_BRAKING:
-		switch (state)
-		{
-		case UNINITIALIZED:
-			commands_printf("%s: -- Can't switch to MANUAL_BRAKING -- Not possible from UNINIITIALIZED", state_str(state));
-			break;
-		default:
-			manual_brake(*cur_tac);
-			break;
-		}
-        increment_alive_until();
-        send_stats(*cur_tac, false);
-		break;
-	case SET_MANUAL_SLOW:
-		switch (state)
-		{
-		case MANUAL_BRAKING:
-			manual_slow_speed_up(*cur_tac);
-			break;
-		default:
-			commands_printf("%s: -- Can't switch to MANUAL_SLOW -- Only possible from MANUAL_BRAKING", state_str(state));
-			break;
-		}
-        increment_alive_until();
-        send_stats(*cur_tac, false);
-		break;
-	case SET_MANUAL_SLOW_BACK:
-		switch (state)
-		{
-		case MANUAL_BRAKING:
-			manual_slow_back_speed_up(*cur_tac);
-			break;
-		default:
-			commands_printf("%s: -- Can't switch to MANUAL_SLOW_BACK -- Only possible from MANUAL_BRAKING", state_str(state));
-			break;
-		}
-        increment_alive_until();
-        send_stats(*cur_tac, false);
-		break;
-	case SET_UNWINDING:
-		// Just warning for terminal mode
-		if (!is_alive())
-		{
-			commands_printf("%s: -- Can't switch to UNWINDING -- alive timeout",
-							state_str(state));
-			break;
-		}
-
-		// Possible from manual braking or pulling states
-		switch (state)
-		{
-		case BRAKING_EXTENSION:
-		case MANUAL_BRAKING:
-		case PRE_PULL:
-		case TAKEOFF_PULL:
-		case PULL:
-		case FAST_PULL:
-			if (*cur_tac > config.braking_length) {
-				commands_printf("%s: -- Can't switch to UNWINDING -- Positive tachometer value",
-								state_str(state));
-				break;
-			}
-			unwinding(*cur_tac);
-			break;
-
-		default:
-			commands_printf("%s: -- Can't switch to UNWINDING -- Only possible from BRAKING_EXTENSION, MANUAL_BRAKING, PRE_PULL, TAKEOFF_PULL, PULL, FAST_PULL", state_str(state));
-			break;
-		}
-        increment_alive_until();
-        send_stats(*cur_tac, false);
-		break;
-	case SET_BRAKING_EXTENSION:
-		switch (state)
-		{
-		case MANUAL_BRAKING:
-		case UNWINDING:
-		case REWINDING:
-			braking_extension(*cur_tac);
-			break;
-
-		default:
-			commands_printf("%s: -- Can't switch to BRAKING_EXTENSION -- Only possible from UNWINDING, REWINDING or MANUAL_BRAKING", state_str(state));
-			break;
-		}
-
-        increment_alive_until();
-        send_stats(*cur_tac, false);
-		break;
-	case SET_PULL_FORCE:
-		// We need correct config.amps_per_kg and drive settings
-		if (state == UNINITIALIZED)
-		{
-			commands_printf("%s: -- Can't update pull force from UNINITIALIZED", state_str(state));
-			break;
-		}
-
-		// Calculate amperes from Kg
-		float pull_current = config.amps_per_kg * terminal_pull_kg;
-
-		if (is_pull_out_of_limits("pull_current",
-								  pull_current,
-								  min_config.pull_current,
-								  max_config.pull_current))
-			break;
-
-		config.pull_current = pull_current;
-
-		send_force_is_set();
-#ifdef VERBOSE_TERMINAL
-		commands_printf("%s: -- %.2fKg (%.1fA, %.1fA/sec) is set",
-						state_str(state), (double)terminal_pull_kg, (double)config.pull_current,
-						(double)amps_per_sec);
-#endif
-		// Update pull force now?
-		switch (state)
-		{
-		case PRE_PULL:
-			pre_pull(*cur_tac);
-			break;
-		case TAKEOFF_PULL:
-			takeoff_pull(*cur_tac);
-			break;
-		case PULL:
-			pull(*cur_tac);
-			break;
-		case FAST_PULL:
-			fast_pull(*cur_tac);
-			break;
-
-		default:
-			break;
-		}
-
-		break;
-	case SET_PRE_PULL:
-		switch (state)
-		{
-		case BRAKING_EXTENSION:
-		case UNWINDING:
-		case REWINDING:
-			if (*cur_tac > config.braking_length) {
-				commands_printf("%s: -- Can't switch to PRE_PULL -- Positive tachometer value",
-								state_str(state));
-				break;
-			}
-			pre_pull(*cur_tac);
-			break;
-		default:
-			commands_printf("%s: -- Can't switch to PRE_PULL -- Only possible from BRAKING_EXTENSION, UNWINDING or REWINDING", state_str(state));
-			break;
-		}
-        increment_alive_until();
-        send_stats(*cur_tac, false);
-		break;
-	case SET_TAKEOFF_PULL:
-		switch (state)
-		{
-		case PRE_PULL:
-			if (*cur_tac > config.braking_length) {
-				commands_printf("%s: -- Can't switch to TAKEOFF_PULL -- Positive tachometer value",
-								state_str(state));
-				break;
-			}
-			takeoff_pull(*cur_tac);
-			break;
-
-		default:
-			commands_printf("%s: -- Can't switch to TAKEOFF_PULL -- Only possible from PRE_PULL", state_str(state));
-			break;
-		}
-        increment_alive_until();
-        send_stats(*cur_tac, false);
-		break;
-	case SET_PULL:
-		switch (state)
-		{
-		case BRAKING_EXTENSION:
-		case TAKEOFF_PULL:
-		case UNWINDING:
-		case REWINDING:
-			if (*cur_tac > config.braking_length) {
-				commands_printf("%s: -- Can't switch to PULL -- Positive tachometer value",
-								state_str(state));
-				break;
-			}
-			pull(*cur_tac);
-			break;
-
-		default:
-			commands_printf("%s: -- Can't switch to PULL -- Only possible from BRAKING_EXTENSION, TAKEOFF_PULL, UNWINDING or REWINDING", state_str(state));
-		}
-        increment_alive_until();
-        send_stats(*cur_tac, false);
-		break;
-	case SET_FAST_PULL:
-		switch (state)
-		{
-		case PULL:
-			if (*cur_tac > config.braking_length) {
-				commands_printf("%s: -- Can't switch to FAST_PULL -- Positive tachometer value",
-								state_str(state));
-				break;
-			}
-			fast_pull(*cur_tac);
-			break;
-
-		default:
-			commands_printf("%s: -- Can't switch to FAST_PULL -- Only possible from PULL", state_str(state));
-			break;
-		}
-        increment_alive_until();
-        send_stats(*cur_tac, false);
-		break;
-	case PRINT_CONF:
-		print_conf(*cur_tac);
-
-		break;
-	case SEND_CONF:
-		send_conf();
-
-		break;
-	case SEND_POWER_STATS:
-		send_stats(*cur_tac, false);
-
-		break;
-	case SEND_TEMP_STATS:
-		send_stats(*cur_tac, true);
-
-		break;
-	case SET_CONF:
-		switch (state)
-		{
-		case UNINITIALIZED:
-		case BRAKING:
-		case BRAKING_EXTENSION:
-		case MANUAL_BRAKING:
-			if (is_drive_config_out_of_limits(&set_drive) || is_config_out_of_limits(&set_config))
-				break;
-
-			// mc_configuration changed?
-			if (set_drive.motor_poles != mc_conf->si_motor_poles ||
-				set_drive.gear_ratio != mc_conf->si_gear_ratio ||
-				set_drive.wheel_diameter != mc_conf->si_wheel_diameter ||
-				set_drive.battery_type != mc_conf->si_battery_type ||
-				set_drive.battery_cells != mc_conf->si_battery_cells)
-			{
-				mc_configuration new_mc_conf = *mc_conf;
-
-				new_mc_conf.si_motor_poles = set_drive.motor_poles;
-				new_mc_conf.si_gear_ratio = set_drive.gear_ratio;
-				new_mc_conf.si_wheel_diameter = set_drive.wheel_diameter;
-
-				// Update voltage limits according to battery type and cells
-				switch (set_drive.battery_type)
-				{
-				case BATTERY_TYPE_LIION_3_0__4_2:
-					new_mc_conf.l_battery_cut_start = 3.1 * (float)set_drive.battery_cells;
-					new_mc_conf.l_battery_cut_end = 3.0 * (float)set_drive.battery_cells;
-					new_mc_conf.l_max_vin = 4.25 * (float)set_drive.battery_cells;
-					new_mc_conf.si_battery_type = set_drive.battery_type;
-					new_mc_conf.si_battery_cells = set_drive.battery_cells;
-					break;
-				case BATTERY_TYPE_LIIRON_2_6__3_6:
-					new_mc_conf.l_battery_cut_start = 2.7 * (float)set_drive.battery_cells;
-					new_mc_conf.l_battery_cut_end = 2.6 * (float)set_drive.battery_cells;
-					new_mc_conf.l_max_vin = 3.65 * (float)set_drive.battery_cells;
-					new_mc_conf.si_battery_type = set_drive.battery_type;
-					new_mc_conf.si_battery_cells = set_drive.battery_cells;
+				}
 					break;
 
 				default:
-					// Do not touch battery if we do not know the type
+					commands_printf("%s: -- Can't set zero -- Only possible from UNINITIALIZED or BRAKING states",
+									state_str(state));
 					break;
-				}
-
-				// TODO: move this code into separate function and use from commands.c
-				conf_general_store_mc_configuration(&new_mc_conf, false);
-				mc_interface_set_configuration(&new_mc_conf);
-				mc_conf = mc_interface_get_configuration();
+			}
+			break;
+		case SET_MANUAL_BRAKING:
+			switch (state) {
+				case UNINITIALIZED:
+					commands_printf("%s: -- Can't switch to MANUAL_BRAKING -- Not possible from UNINIITIALIZED",
+									state_str(state));
+					break;
+				default:
+					manual_brake(*cur_tac);
+					break;
+			}
+			increment_alive_until();
+			send_stats(*cur_tac, false);
+			break;
+		case SET_MANUAL_SLOW:
+			switch (state) {
+				case MANUAL_BRAKING:
+					manual_slow_speed_up(*cur_tac);
+					break;
+				default:
+					commands_printf("%s: -- Can't switch to MANUAL_SLOW -- Only possible from MANUAL_BRAKING",
+									state_str(state));
+					break;
+			}
+			increment_alive_until();
+			send_stats(*cur_tac, false);
+			break;
+		case SET_MANUAL_SLOW_BACK:
+			switch (state) {
+				case MANUAL_BRAKING:
+					manual_slow_back_speed_up(*cur_tac);
+					break;
+				default:
+					commands_printf("%s: -- Can't switch to MANUAL_SLOW_BACK -- Only possible from MANUAL_BRAKING",
+									state_str(state));
+					break;
+			}
+			increment_alive_until();
+			send_stats(*cur_tac, false);
+			break;
+		case SET_UNWINDING:
+			// Just warning for terminal mode
+			if (!is_alive()) {
+				commands_printf("%s: -- Can't switch to UNWINDING -- alive timeout",
+								state_str(state));
+				break;
 			}
 
-			config = set_config;
+			// Possible from manual braking or pulling states
+			switch (state) {
+				case BRAKING_EXTENSION:
+				case MANUAL_BRAKING:
+				case PRE_PULL:
+				case TAKEOFF_PULL:
+				case PULL:
+				case FAST_PULL:
+					if (*cur_tac > config.braking_length) {
+						commands_printf("%s: -- Can't switch to UNWINDING -- Positive tachometer value",
+										state_str(state));
+						break;
+					}
+					unwinding(*cur_tac);
+					break;
 
-			store_config_to_eeprom(&config);
+				default:
+					commands_printf(
+							"%s: -- Can't switch to UNWINDING -- Only possible from BRAKING_EXTENSION, MANUAL_BRAKING, PRE_PULL, TAKEOFF_PULL, PULL, FAST_PULL",
+							state_str(state));
+					break;
+			}
+			increment_alive_until();
+			send_stats(*cur_tac, false);
+			break;
+		case SET_BRAKING_EXTENSION:
+			switch (state) {
+				case MANUAL_BRAKING:
+				case UNWINDING:
+				case REWINDING:
+					braking_extension(*cur_tac);
+					break;
 
-			send_command_only(SK_COMM_SETTINGS_APPLIED);
+				default:
+					commands_printf(
+							"%s: -- Can't switch to BRAKING_EXTENSION -- Only possible from UNWINDING, REWINDING or MANUAL_BRAKING",
+							state_str(state));
+					break;
+			}
+
+			increment_alive_until();
+			send_stats(*cur_tac, false);
+			break;
+		case SET_PULL_FORCE:
+			// We need correct config.amps_per_kg and drive settings
+			if (state == UNINITIALIZED) {
+				commands_printf("%s: -- Can't update pull force from UNINITIALIZED", state_str(state));
+				break;
+			}
+
+			// Calculate amperes from Kg
+			float pull_current = config.amps_per_kg * terminal_pull_kg;
+
+			if (is_pull_out_of_limits("pull_current",
+									  pull_current,
+									  min_config.pull_current,
+									  max_config.pull_current))
+				break;
+
+			config.pull_current = pull_current;
+
+			save_force_is_set();
 #ifdef VERBOSE_TERMINAL
-			commands_printf("%s: -- Settings are set -- Have a nice puffs!", state_str(state));
+			commands_printf("%s: -- %.2fKg (%.1fA, %.1fA/sec) is set",
+							state_str(state), (double)terminal_pull_kg, (double)config.pull_current,
+							(double)amps_per_sec);
 #endif
-			// Announce new settings
+			// Update pull force now?
+			switch (state) {
+				case PRE_PULL:
+					pre_pull(*cur_tac);
+					break;
+				case TAKEOFF_PULL:
+					takeoff_pull(*cur_tac);
+					break;
+				case PULL:
+					pull(*cur_tac);
+					break;
+				case FAST_PULL:
+					fast_pull(*cur_tac);
+					break;
+
+				default:
+					break;
+			}
+
+			break;
+		case SET_PRE_PULL:
+			switch (state) {
+				case BRAKING_EXTENSION:
+				case UNWINDING:
+				case REWINDING:
+					if (*cur_tac > config.braking_length) {
+						commands_printf("%s: -- Can't switch to PRE_PULL -- Positive tachometer value",
+										state_str(state));
+						break;
+					}
+					pre_pull(*cur_tac);
+					break;
+				default:
+					commands_printf(
+							"%s: -- Can't switch to PRE_PULL -- Only possible from BRAKING_EXTENSION, UNWINDING or REWINDING",
+							state_str(state));
+					break;
+			}
+			increment_alive_until();
+			send_stats(*cur_tac, false);
+			break;
+		case SET_TAKEOFF_PULL:
+			switch (state) {
+				case PRE_PULL:
+					if (*cur_tac > config.braking_length) {
+						commands_printf("%s: -- Can't switch to TAKEOFF_PULL -- Positive tachometer value",
+										state_str(state));
+						break;
+					}
+					takeoff_pull(*cur_tac);
+					break;
+
+				default:
+					commands_printf("%s: -- Can't switch to TAKEOFF_PULL -- Only possible from PRE_PULL",
+									state_str(state));
+					break;
+			}
+			increment_alive_until();
+			send_stats(*cur_tac, false);
+			break;
+		case SET_PULL:
+			switch (state) {
+				case BRAKING_EXTENSION:
+				case TAKEOFF_PULL:
+				case UNWINDING:
+				case REWINDING:
+					if (*cur_tac > config.braking_length) {
+						commands_printf("%s: -- Can't switch to PULL -- Positive tachometer value",
+										state_str(state));
+						break;
+					}
+					pull(*cur_tac);
+					break;
+
+				default:
+					commands_printf(
+							"%s: -- Can't switch to PULL -- Only possible from BRAKING_EXTENSION, TAKEOFF_PULL, UNWINDING or REWINDING",
+							state_str(state));
+			}
+			increment_alive_until();
+			send_stats(*cur_tac, false);
+			break;
+		case SET_FAST_PULL:
+			switch (state) {
+				case PULL:
+					if (*cur_tac > config.braking_length) {
+						commands_printf("%s: -- Can't switch to FAST_PULL -- Positive tachometer value",
+										state_str(state));
+						break;
+					}
+					fast_pull(*cur_tac);
+					break;
+
+				default:
+					commands_printf("%s: -- Can't switch to FAST_PULL -- Only possible from PULL", state_str(state));
+					break;
+			}
+			increment_alive_until();
+			send_stats(*cur_tac, false);
+			break;
+		case PRINT_CONF:
+			print_conf(*cur_tac);
+
+			break;
+		case SEND_CONF:
 			send_conf();
 
-			switch (state)
-			{
-			case MANUAL_BRAKING: // Update braking force
-				manual_brake(*cur_tac);
-				break;
-			case UNINITIALIZED: // Forget about UNINITIALIZED :)
-				braking(*cur_tac);
-			default:
-				break;
+			break;
+		case SEND_POWER_STATS:
+			send_stats(*cur_tac, false);
+
+			break;
+		case SEND_TEMP_STATS:
+			send_stats(*cur_tac, true);
+
+			break;
+		case SET_CONF:
+			switch (state) {
+				case UNINITIALIZED:
+				case BRAKING:
+				case BRAKING_EXTENSION:
+				case MANUAL_BRAKING:
+					if (is_drive_config_out_of_limits(&set_drive) || is_config_out_of_limits(&set_config))
+						break;
+
+					// mc_configuration changed?
+					if (set_drive.motor_poles != mc_conf->si_motor_poles ||
+						set_drive.gear_ratio != mc_conf->si_gear_ratio ||
+						set_drive.wheel_diameter != mc_conf->si_wheel_diameter ||
+						set_drive.battery_type != mc_conf->si_battery_type ||
+						set_drive.battery_cells != mc_conf->si_battery_cells) {
+						mc_configuration new_mc_conf = *mc_conf;
+
+						new_mc_conf.si_motor_poles = set_drive.motor_poles;
+						new_mc_conf.si_gear_ratio = set_drive.gear_ratio;
+						new_mc_conf.si_wheel_diameter = set_drive.wheel_diameter;
+
+						// Update voltage limits according to battery type and cells
+						switch (set_drive.battery_type) {
+							case BATTERY_TYPE_LIION_3_0__4_2:
+								new_mc_conf.l_battery_cut_start = 3.1 * (float) set_drive.battery_cells;
+								new_mc_conf.l_battery_cut_end = 3.0 * (float) set_drive.battery_cells;
+								new_mc_conf.l_max_vin = 4.25 * (float) set_drive.battery_cells;
+								new_mc_conf.si_battery_type = set_drive.battery_type;
+								new_mc_conf.si_battery_cells = set_drive.battery_cells;
+								break;
+							case BATTERY_TYPE_LIIRON_2_6__3_6:
+								new_mc_conf.l_battery_cut_start = 2.7 * (float) set_drive.battery_cells;
+								new_mc_conf.l_battery_cut_end = 2.6 * (float) set_drive.battery_cells;
+								new_mc_conf.l_max_vin = 3.65 * (float) set_drive.battery_cells;
+								new_mc_conf.si_battery_type = set_drive.battery_type;
+								new_mc_conf.si_battery_cells = set_drive.battery_cells;
+								break;
+
+							default:
+								// Do not touch battery if we do not know the type
+								break;
+						}
+
+						// TODO: move this code into separate function and use from commands.c
+						conf_general_store_mc_configuration(&new_mc_conf, false);
+						mc_interface_set_configuration(&new_mc_conf);
+						mc_conf = mc_interface_get_configuration();
+					}
+
+					config = set_config;
+
+					store_config_to_eeprom(&config);
+
+					save_command_only(SK_COMM_SETTINGS_APPLIED);
+#ifdef VERBOSE_TERMINAL
+					commands_printf("%s: -- Settings are set -- Have a nice puffs!", state_str(state));
+#endif
+					// Announce new settings
+					send_conf();
+
+					switch (state) {
+						case MANUAL_BRAKING: // Update braking force
+							manual_brake(*cur_tac);
+							break;
+						case UNINITIALIZED: // Forget about UNINITIALIZED :)
+							braking(*cur_tac);
+						default:
+							break;
+					}
+
+					break;
+				default:
+					commands_printf(
+							"%s: -- Can't set configuration -- Only possible from UNINITIALIZED or any BRAKING states",
+							state_str(state));
+			}
+
+			break;
+		case SET_SMOOTH:
+			state = MANUAL_DEBUG_SMOOTH;
+
+			switch (terminal_motor_state.mode) {
+				case MOTOR_RELEASED:
+					smooth_motor_release();
+					break;
+				case MOTOR_BRAKING:
+					smooth_motor_brake(*cur_tac, *abs_tac, terminal_motor_state.param.current);
+					break;
+				case MOTOR_CURRENT:
+					smooth_motor_current(*cur_tac, *abs_tac, terminal_motor_state.param.current);
+					break;
+				case MOTOR_SPEED:
+					smooth_motor_speed(terminal_motor_state.param.erpm);
+					break;
+
+				default:
+					break;
 			}
 
 			break;
 		default:
-			commands_printf("%s: -- Can't set configuration -- Only possible from UNINITIALIZED or any BRAKING states",
-							state_str(state));
-		}
-
-		break;
-	case SET_SMOOTH:
-		state = MANUAL_DEBUG_SMOOTH;
-
-		switch (terminal_motor_state.mode)
-		{
-		case MOTOR_RELEASED:
-			smooth_motor_release();
-			break;
-		case MOTOR_BRAKING:
-			smooth_motor_brake(*cur_tac, *abs_tac, terminal_motor_state.param.current);
-			break;
-		case MOTOR_CURRENT:
-			smooth_motor_current(*cur_tac, *abs_tac, terminal_motor_state.param.current);
-			break;
-		case MOTOR_SPEED:
-			smooth_motor_speed(terminal_motor_state.param.erpm);
-			break;
-
-		default:
-			break;
-		}
-
-		break;
-	default:
-		commands_printf("SkyPUFF: unknown terminal command, exiting!");
-		stop_now = true;
+			commands_printf("SkyPUFF: unknown terminal command, exiting!");
+			stop_now = true;
 	}
 
 	// Nothing changed during switch?
@@ -2600,22 +2500,20 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac)
 		terminal_command = DO_NOTHING;
 }
 
-static inline void antisex_adjustment(void)
-{
+static inline void antisex_adjustment(void) {
 	// Change motor current only if we are in pull states
 	if (current_motor_state.mode == MOTOR_CURRENT)
 		mc_interface_set_current(current_motor_state.param.current * antisex_amps_gain + antisex_amps);
 }
 
-static inline void antisex_tick(void)
-{
+static inline void antisex_tick(void) {
 	bool isCurrentStrongEnough = current_motor_state.mode == MOTOR_CURRENT &&
-							     current_motor_state.param.current >= config.antisex_min_pull_amps;
-	
+								 current_motor_state.param.current >= config.antisex_min_pull_amps;
+
 	// Antisex disabled?
-	if(antisex_amps == 0) {
+	if (antisex_amps == 0) {
 		// Pull in with fast acceleration pulling more then min pull
-		if(isCurrentStrongEnough && measurement.filtered_acceleration_tac_mss >= config.antisex_acceleration_on_mss) {
+		if (isCurrentStrongEnough && measurement.filtered_acceleration_tac_mss >= config.antisex_acceleration_on_mss) {
 			// Enable pull reduction
 			antisex_amps = -config.antisex_reduce_amps;
 			antisex_start_time = measurement.time;
@@ -2628,40 +2526,38 @@ static inline void antisex_tick(void)
 	}
 
 	// Antisex is enabled, but should we turn it off?
-	if(!isCurrentStrongEnough || 
-	   measurement.filtered_acceleration_tac_mss <= config.antisex_acceleration_off_mss || // Strong pull out acceleration?
-	   chTimeDiffX(antisex_start_time, measurement.time) >= MS2ST(config.antisex_max_period_ms)) {  // Timed out?
+	if (!isCurrentStrongEnough ||
+		measurement.filtered_acceleration_tac_mss <= config.antisex_acceleration_off_mss ||
+		// Strong pull out acceleration?
+		chTimeDiffX(antisex_start_time, measurement.time) >= MS2ST(config.antisex_max_period_ms)) {  // Timed out?
 		antisex_amps = 0;
 		antisex_adjustment();
 #ifdef DEBUG_ANTISEX
 		commands_printf("%s: antisex OFF", state_str(state));
 #endif
-}
+	}
 }
 
-static THD_FUNCTION(my_thread, arg)
-{
-	(void)arg;
+static THD_FUNCTION(my_thread, arg) {
+	(void) arg;
 
 	chRegSetThreadName("App SkyPUFF");
 
 	is_running = true;
 
 	// Main control loop
-	for (loop_step = 0;; loop_step++)
-	{
+	for (loop_step = 0;; loop_step++) {
 		// Check if it is time to stop app
-		if (stop_now)
-		{
+		if (stop_now) {
 			is_running = false;
 			return;
 		}
 
 		int cur_tac = mc_interface_get_tachometer_value(false);
-		
-		if(measurement_tick(cur_tac))  // Are speed and acceleration updated?
+
+		if (measurement_tick(cur_tac))  // Are speed and acceleration updated?
 			antisex_tick();
-	
+
 		int abs_tac = abs(cur_tac);
 
 		// Communication timeout?
@@ -2686,13 +2582,10 @@ static THD_FUNCTION(my_thread, arg)
 // Terminal command to change tachometer value
 // NOT SAFE
 // Debug usage only!
-static void terminal_move_zero(int argc, const char **argv)
-{
-	if (argc == 2)
-	{
+static void terminal_move_zero(int argc, const char **argv) {
+	if (argc == 2) {
 		float d = 0;
-		if (sscanf(argv[1], "%f", &d) == EOF)
-		{
+		if (sscanf(argv[1], "%f", &d) == EOF) {
 			commands_printf("move_tac: can't parse meters: '%s' value.", argv[1]);
 			return;
 		};
@@ -2705,70 +2598,60 @@ static void terminal_move_zero(int argc, const char **argv)
 
 		commands_printf("%s: -- moving zero %.2fm (%d steps) %s, cur pos: %.2fm (%d steps), new pos: %.2fm (%d steps)",
 						state_str(state),
-						(double)d, steps, d < 0 ? "backward" : "forward",
-						(double)tac_steps_to_meters(cur_tac), cur_tac,
-						(double)tac_steps_to_meters(new_tac), new_tac);
+						(double) d, steps, d < 0 ? "backward" : "forward",
+						(double) tac_steps_to_meters(cur_tac), cur_tac,
+						(double) tac_steps_to_meters(new_tac), new_tac);
 
 		mc_interface_set_tachometer_value(new_tac);
-	}
-	else
-	{
+	} else {
 		commands_printf("This command requires one argument: 'move_zero -5.2' will move zero 5.2 meters backward");
 	}
 }
 
-static void terminal_set_zero(int argc, const char **argv)
-{
-	(void)argc;
-	(void)argv;
+static void terminal_set_zero(int argc, const char **argv) {
+	(void) argc;
+	(void) argv;
 
 	terminal_command = SET_ZERO;
 }
 
-static void terminal_print_conf(int argc, const char **argv)
-{
-	(void)argc;
-	(void)argv;
+static void terminal_print_conf(int argc, const char **argv) {
+	(void) argc;
+	(void) argv;
 
 	terminal_command = PRINT_CONF;
 }
 
-static void terminal_get_conf(int argc, const char **argv)
-{
-	(void)argc;
-	(void)argv;
+static void terminal_get_conf(int argc, const char **argv) {
+	(void) argc;
+	(void) argv;
 
 	terminal_command = SEND_CONF;
 }
 
-static void terminal_set_example_conf(int argc, const char **argv)
-{
-	(void)argc;
-	(void)argv;
+static void terminal_set_example_conf(int argc, const char **argv) {
+	(void) argc;
+	(void) argv;
 
 	set_example_drive(&set_drive);
 	set_example_conf(&set_config);
 	terminal_command = SET_CONF;
 }
 
-static void terminal_alive_forever(int argc, const char **argv)
-{
-    (void)argc;
-    (void)argv;
-    alive_forever = true;
+static void terminal_alive_forever(int argc, const char **argv) {
+	(void) argc;
+	(void) argv;
+	alive_forever = true;
 }
 
-static void terminal_set_pull_force(int argc, const char **argv)
-{
-	if (argc < 2)
-	{
+static void terminal_set_pull_force(int argc, const char **argv) {
+	if (argc < 2) {
 		commands_printf("%s: -- Command requires one argument -- 'pull_force 100' will set pull force 100Kg");
 		return;
 	}
 
 	float kg;
-	if (sscanf(argv[1], "%f", &kg) == EOF)
-	{
+	if (sscanf(argv[1], "%f", &kg) == EOF) {
 		commands_printf("%s: -- Can't parse '%s' as kg value.",
 						state_str(state), argv[1]);
 		return;
@@ -2780,8 +2663,7 @@ static void terminal_set_pull_force(int argc, const char **argv)
 }
 
 // Helper function to uppercase terminal commands
-inline static void uppercase(char *out, const char *in, const int out_len)
-{
+inline static void uppercase(char *out, const char *in, const int out_len) {
 	int in_len = strlen(in);
 
 	// Get minumum
@@ -2795,10 +2677,8 @@ inline static void uppercase(char *out, const char *in, const int out_len)
 	out[valid_len] = 0;
 }
 
-static void terminal_set_state(int argc, const char **argv)
-{
-	if (argc < 2)
-	{
+static void terminal_set_state(int argc, const char **argv) {
+	if (argc < 2) {
 		commands_printf("%s: -- Command requires at least one argument -- For example: 'set_state UNWINDING'",
 						state_str(state));
 		return;
@@ -2808,53 +2688,34 @@ static void terminal_set_state(int argc, const char **argv)
 	char up[up_len];
 	uppercase(up, argv[1], up_len);
 
-	if (!strcmp(up, "UNWINDING"))
-	{
+	if (!strcmp(up, "UNWINDING")) {
 		terminal_command = SET_UNWINDING;
 		return;
-	}
-	else if (!strcmp(up, "MANUAL_BRAKING"))
-	{
+	} else if (!strcmp(up, "MANUAL_BRAKING")) {
 		terminal_command = SET_MANUAL_BRAKING;
 		return;
-	}
-	else if (!strcmp(up, "BRAKING_EXTENSION"))
-	{
+	} else if (!strcmp(up, "BRAKING_EXTENSION")) {
 		terminal_command = SET_BRAKING_EXTENSION;
 		return;
-	}
-	else if (!strcmp(up, "MANUAL_SLOW"))
-	{
+	} else if (!strcmp(up, "MANUAL_SLOW")) {
 		terminal_command = SET_MANUAL_SLOW;
 		return;
-	}
-	else if (!strcmp(up, "MANUAL_SLOW_BACK"))
-	{
+	} else if (!strcmp(up, "MANUAL_SLOW_BACK")) {
 		terminal_command = SET_MANUAL_SLOW_BACK;
 		return;
-	}
-	else if (!strcmp(up, "PRE_PULL"))
-	{
+	} else if (!strcmp(up, "PRE_PULL")) {
 		terminal_command = SET_PRE_PULL;
 		return;
-	}
-	else if (!strcmp(up, "TAKEOFF_PULL"))
-	{
+	} else if (!strcmp(up, "TAKEOFF_PULL")) {
 		terminal_command = SET_TAKEOFF_PULL;
 		return;
-	}
-	else if (!strcmp(up, "PULL"))
-	{
+	} else if (!strcmp(up, "PULL")) {
 		terminal_command = SET_PULL;
 		return;
-	}
-	else if (!strcmp(up, "FAST_PULL"))
-	{
+	} else if (!strcmp(up, "FAST_PULL")) {
 		terminal_command = SET_FAST_PULL;
 		return;
-	}
-	else
-	{
+	} else {
 		commands_printf("%s: -- 'set %s' not implemented",
 						state_str(state), argv[1]);
 	}
@@ -2949,19 +2810,18 @@ static void terminal_smooth(int argc, const char **argv)
 }
 #endif
 
-void terminal_adc2_tick(int argc, const char **argv)
-{
-	(void)argc;
-	(void)argv;
+void terminal_adc2_tick(int argc, const char **argv) {
+	(void) argc;
+	(void) argv;
 
 	const int delay = 1, loops = 6;
 
 #ifdef VERBOSE_TERMINAL
 	commands_printf("%s: -- ADC2 %d impulses with %d delay",
-	                state_str(state), loops, delay);
+					state_str(state), loops, delay);
 #endif
 
-	for(int i = 0; i < loops; i++) {
+	for (int i = 0; i < loops; i++) {
 		palSetPad(HW_ADC_EXT2_GPIO, HW_ADC_EXT2_PIN);
 		chThdSleepMilliseconds(delay);
 		palClearPad(HW_ADC_EXT2_GPIO, HW_ADC_EXT2_PIN);
@@ -2970,20 +2830,19 @@ void terminal_adc2_tick(int argc, const char **argv)
 }
 
 
-void draw_spool_mass_graph(systime_t started, int drawing_ms, float kg)
-{
+void draw_spool_mass_graph(systime_t started, int drawing_ms, float kg) {
 	systime_t cur_time = chVTGetSystemTime();
 	systime_t end_time = chTimeAddX(cur_time, MS2ST(drawing_ms));
 	systime_t last_measurement_time = 0;
 
-	while(chVTGetSystemTime() < end_time) {
-		if(last_measurement_time != measurement.time) {
+	while (chVTGetSystemTime() < end_time) {
+		if (last_measurement_time != measurement.time) {
 			last_measurement_time = measurement.time;
 
 			sysinterval_t from_startedI = chTimeDiffX(started, measurement.time);
 
 			// Convert to microseconds cause overflow, so convert in serial way
-			float from_startedS = (float)from_startedI / (float)CH_CFG_ST_FREQUENCY;
+			float from_startedS = (float) from_startedI / (float) CH_CFG_ST_FREQUENCY;
 
 			int n = 0; // Graph number
 
@@ -3001,60 +2860,57 @@ void draw_spool_mass_graph(systime_t started, int drawing_ms, float kg)
 
 			// Instant pull (kg)
 			commands_plot_set_graph(n++);
-			commands_send_plot_points(from_startedS, mc_interface_get_tot_current_directional_filtered() / config.amps_per_kg);
+			commands_send_plot_points(from_startedS,
+									  mc_interface_get_tot_current_directional_filtered() / config.amps_per_kg);
 
 			// Mass (kg) 
 			// F = ma, m = F / a
-			if(fabs(measurement.filtered_acceleration_tac_mss) > 1) {
+			if (fabs(measurement.filtered_acceleration_tac_mss) > 1) {
 				commands_plot_set_graph(n++);
 				commands_send_plot_points(from_startedS, kg / measurement.filtered_acceleration_tac_mss);
 			}
 		}
 
 		chThdSleepMilliseconds(1);
-	} 
+	}
 }
 
-void terminal_measure_spool(int argc, const char **argv)
-{
+void terminal_measure_spool(int argc, const char **argv) {
 	float kg = 1, secs = 2;
 	int use_smooth = 0;
 
-	if (argc < 3)
-	{
-		commands_printf("%s: -- 'measure_spool' requires at least two arguments: <kg> <seconds> [0/1 smooth motor] -- For example: 'measure_spool 5 3 1'",
-						state_str(state));
+	if (argc < 3) {
+		commands_printf(
+				"%s: -- 'measure_spool' requires at least two arguments: <kg> <seconds> [0/1 smooth motor] -- For example: 'measure_spool 5 3 1'",
+				state_str(state));
 		return;
 	}
 
-	if (sscanf(argv[1], "%f", &kg) == EOF)
-	{
+	if (sscanf(argv[1], "%f", &kg) == EOF) {
 		commands_printf("%s: -- Can't parse '%s' as kg value.",
 						state_str(state), argv[1]);
 		return;
 	};
 
-	if (sscanf(argv[2], "%f", &secs) == EOF)
-	{
+	if (sscanf(argv[2], "%f", &secs) == EOF) {
 		commands_printf("%s: -- Can't parse '%s' as seconds value.",
 						state_str(state), argv[2]);
 		return;
 	};
 
-	if(argc == 4 && sscanf(argv[3], "%d", &use_smooth) == EOF)
-	{
+	if (argc == 4 && sscanf(argv[3], "%d", &use_smooth) == EOF) {
 		commands_printf("%s: -- Can't parse '%s' as use_smooth value.",
 						state_str(state), argv[3]);
 		return;
 	};
 
-	if(state == UNINITIALIZED) {
+	if (state == UNINITIALIZED) {
 		commands_printf("%s: -- Can't measure spool in UNITIALIZED state!", state_str(state));
 		return;
 	}
 
 	// Set alive during our tests
-    alive_until = loop_step + (secs + 1) * 2000;
+	alive_until = loop_step + (secs + 1) * 2000;
 	chThdSleepMilliseconds(5);
 
 	float amps = kg * config.amps_per_kg;
@@ -3065,8 +2921,8 @@ void terminal_measure_spool(int argc, const char **argv)
 	terminal_motor_state.param.current = 0;
 
 	chThdSleepMilliseconds(5);
-	
-	if(state != MANUAL_DEBUG_SMOOTH) {
+
+	if (state != MANUAL_DEBUG_SMOOTH) {
 		commands_printf("%s: -- Can't set MANUAL_DEBUG_SMOOTH state!", state_str(state));
 		return;
 	}
@@ -3078,32 +2934,30 @@ void terminal_measure_spool(int argc, const char **argv)
 	commands_plot_add_graph("Pull (kg)");
 	commands_plot_add_graph("Spool 'virtual mass' (kg)");
 
-	commands_printf("%s: -- Running forward and backward using %s with %.2fkg (%.1fA) force during %.2fsecs...", 
+	commands_printf("%s: -- Running forward and backward using %s with %.2fkg (%.1fA) force during %.2fsecs...",
 					state_str(state), use_smooth ? "'smooth motor'" : "'current control'",
-					(double)kg, (double)(-amps), (double)secs);
+					(double) kg, (double) (-amps), (double) secs);
 
 	timeout_reset();
 
 	systime_t started = chVTGetSystemTime();
 
-	if(use_smooth) {
+	if (use_smooth) {
 		terminal_command = SET_SMOOTH;
 		terminal_motor_state.mode = MOTOR_CURRENT;
 		terminal_motor_state.param.current = amps;
 
-	}
-	else
+	} else
 		mc_interface_set_current(amps);
 
 	draw_spool_mass_graph(started, secs * 1000, kg);
 
-	if(use_smooth) {
+	if (use_smooth) {
 		terminal_command = SET_SMOOTH;
 		terminal_motor_state.mode = MOTOR_CURRENT;
 		terminal_motor_state.param.current = -amps;
 
-	}
-	else
+	} else
 		mc_interface_set_current(-amps);
 
 	draw_spool_mass_graph(started, secs * 1500, kg);
