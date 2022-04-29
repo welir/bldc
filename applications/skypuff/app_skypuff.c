@@ -126,8 +126,9 @@ static systime_t measurement_delay = MS2ST(5); // Measure speed based on tachome
 static float measurement_speed_filter_period_secs =
 		(float) 50.0 / (float) 1000.0; // Period of tachometer speed measurements to overage
 
-#define REPLY_BUF_SIZE 300 // this size must be less than
-uint8_t reply_buf[REPLY_BUF_SIZE]; // this buffer collects messages to be appended to the next stats response
+// Buffer to collect async messages to be appended to the next stats response
+#define REPLY_BUF_SIZE (PACKET_MAX_PL_LEN - 200) // 200 bytes for stats packet in the begining
+uint8_t reply_buf[REPLY_BUF_SIZE];
 size_t reply_buf_len = 0;
 
 // Store tachometer based speed measurements here
