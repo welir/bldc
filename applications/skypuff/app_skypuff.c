@@ -1231,6 +1231,7 @@ inline static void send_stats(const int cur_tac, bool add_temps) {
 				state_str(state), max_buf_size, ind);
 	}
 
+	// Let's add additional messages. For example status changes.
 	if (reply_buf_len > 0) {
 		memcpy(buffer + ind, reply_buf, reply_buf_len);
 		reply_buf_len = 0;
