@@ -177,7 +177,7 @@ typedef enum {
 
 static volatile skypuff_terminal_command terminal_command;
 
-// This struct is not for serialization
+// Smooth force apply and release
 typedef struct {
 	smooth_motor_mode mode;
 	union {
