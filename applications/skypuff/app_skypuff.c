@@ -1222,8 +1222,9 @@ inline static void send_stats(const int cur_tac, bool add_temps) {
 	buffer[ind++] = state;
 
 	append_power_stats(buffer, &ind, cur_tac);
-	if (add_temps)
+	if (add_temps) {
 		append_temp_stats(buffer, &ind);
+	}
 
 	if (ind > max_buf_size) {
 		commands_printf(
@@ -1234,6 +1235,7 @@ inline static void send_stats(const int cur_tac, bool add_temps) {
 	// Let's add additional messages. For example status changes.
 	if (reply_buf_len > 0) {
 		memcpy(buffer + ind, reply_buf, reply_buf_len);
+		ind += reply_buf_len;
 		reply_buf_len = 0;
 	}
 
