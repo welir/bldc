@@ -91,8 +91,8 @@ inline static bool deserialize_scales(unsigned char *data, unsigned int len, sky
 	to->charge_max_current = buffer_get_float16(data, 1e1, ind);
 	to->fet_temp_max = buffer_get_float16(data, 1e1, ind);
 	to->motor_temp_max = buffer_get_float16(data, 1e1, ind);
-	to->v_in_min = buffer_get_float32_auto(data, ind);
-	to->v_in_max = buffer_get_float32_auto(data, ind);
+	to->v_in_min = buffer_get_float32(data, 1e2, ind);
+	to->v_in_max = buffer_get_float32(data, 1e2, ind);
 	return true;
 }
 
