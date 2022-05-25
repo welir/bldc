@@ -1198,6 +1198,9 @@ inline static void send_conf(void) {
 	serialize_drive(buffer, &ind);
 	serialize_config(buffer, &ind, &config);
 
+	buffer_append_float16(buffer, mc_conf->l_temp_fet_end, 10, &ind);
+	buffer_append_float16(buffer, mc_conf->l_temp_motor_end, 10, &ind);
+
 	if (ind > max_buf_size) {
 		commands_printf(
 				"%s: -- ALARMA!!! -- send_conf() max buffer size %d, serialized bufer %d bytes. Memory corrupted!",
@@ -2287,7 +2290,7 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac) {
 				default:
 					break;
 			}
-
+            send_stats(*cur_tac, false);
 			break;
 		case SET_PRE_PULL:
 			switch (state) {
@@ -2312,6 +2315,7 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac) {
 			break;
 		case SET_TAKEOFF_PULL:
 			switch (state) {
+				case UNWINDING:
 				case PRE_PULL:
 					if (*cur_tac > config.braking_length) {
 						commands_printf("%s: -- Can't switch to TAKEOFF_PULL -- Positive tachometer value",
@@ -2322,7 +2326,7 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac) {
 					break;
 
 				default:
-					commands_printf("%s: -- Can't switch to TAKEOFF_PULL -- Only possible from PRE_PULL",
+					commands_printf("%s: -- Can't switch to TAKEOFF_PULL -- Only possible from UNWINDING, PRE_PULL",
 									state_str(state));
 					break;
 			}
@@ -2353,6 +2357,7 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac) {
 			break;
 		case SET_FAST_PULL:
 			switch (state) {
+				case UNWINDING:
 				case PULL:
 					if (*cur_tac > config.braking_length) {
 						commands_printf("%s: -- Can't switch to FAST_PULL -- Positive tachometer value",
@@ -2363,7 +2368,7 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac) {
 					break;
 
 				default:
-					commands_printf("%s: -- Can't switch to FAST_PULL -- Only possible from PULL", state_str(state));
+					commands_printf("%s: -- Can't switch to FAST_PULL -- Only possible from UNWINDING, PULL", state_str(state));
 					break;
 			}
 			increment_alive_until();
