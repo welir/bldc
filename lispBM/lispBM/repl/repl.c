@@ -1,5 +1,5 @@
 /*
-    Copyright 2018, 2021 Joel Svensson  svenssonjoel@yahoo.se
+    Copyright 2018, 2021, 2022 Joel Svensson  svenssonjoel@yahoo.se
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -322,6 +322,12 @@ bool dyn_load(const char *str, const char **code) {
   return res;
 }
 
+lbm_value ext_block(lbm_value *args, lbm_uint argn) {
+
+  printf("blocking CID: %d\n", lbm_get_current_cid());
+  lbm_block_ctx_from_extension();
+  return lbm_enc_sym(SYM_TRUE);
+}
 
 lbm_value ext_print(lbm_value *args, lbm_uint argn) {
   erase();
@@ -511,7 +517,7 @@ int main(int argc, char **argv) {
   } else {
     printf("Loading array extensions failed\n");
   }
-  
+
   if (lbm_string_extensions_init()) {
     printf("String extensions loaded\n");
   } else {
@@ -523,8 +529,13 @@ int main(int argc, char **argv) {
   } else {
     printf("Loading math extensions failed\n");
   }
-  
-  
+
+  res = lbm_add_extension("block", ext_block);
+  if (res)
+    printf("Extension added.\n");
+  else
+    printf("Error adding extension.\n");
+
   res = lbm_add_extension("print", ext_print);
   if (res)
     printf("Extension added.\n");
@@ -576,6 +587,7 @@ int main(int argc, char **argv) {
       printf("Memory free: %"PRI_UINT" Words\n", lbm_memory_num_free());
       printf("Allocated arrays: %"PRI_UINT"\n", heap_state.num_alloc_arrays);
       printf("Symbol table size: %"PRI_UINT" Bytes\n", lbm_get_symbol_table_size());
+      printf("Symbol names size: %"PRI_UINT" Bytes\n", lbm_get_symbol_table_size_names());
       free(str);
     }  else if (strncmp(str, ":env", 4) == 0) {
       lbm_value curr = *lbm_get_env_ptr();
@@ -640,6 +652,11 @@ int main(int argc, char **argv) {
       printf("****** Done contexts ******\n");
       lbm_done_iterator(print_ctx_info, NULL, NULL);
       free(str);
+    } else if (strncmp(str, ":unblock", 8) == 0) {
+      int id = atoi(str + 8);
+      printf("Unblocking: %d\n", id);
+      lbm_unblock_ctx(id, lbm_enc_i(42));
+      free(str);
     } else if (strncmp(str, ":wait", 5) == 0) {
       int id = atoi(str + 5);
       bool exists = false;
@@ -695,6 +712,12 @@ int main(int argc, char **argv) {
         } else {
           printf("Loading math extensions failed\n");
         }
+
+        res = lbm_add_extension("block", ext_block);
+        if (res)
+          printf("Extension added.\n");
+        else
+          printf("Error adding extension.\n");
 
         lbm_add_extension("print", ext_print);
         free(str);
