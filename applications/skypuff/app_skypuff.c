@@ -1198,8 +1198,8 @@ inline static void send_conf(void) {
 	serialize_drive(buffer, &ind);
 	serialize_config(buffer, &ind, &config);
 
-	buffer_append_float16(buffer, mc_conf->l_temp_fet_end, 10, &ind);
-	buffer_append_float16(buffer, mc_conf->l_temp_motor_end, 10, &ind);
+	buffer_append_float16(buffer, mc_conf->l_temp_fet_start, 10, &ind);
+	buffer_append_float16(buffer, mc_conf->l_temp_motor_start, 10, &ind);
 
 	if (ind > max_buf_size) {
 		commands_printf(
