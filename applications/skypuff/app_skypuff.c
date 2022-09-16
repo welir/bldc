@@ -56,16 +56,23 @@
 
 	From 1 March 2020 Skypuff UI uses binary protocol only. I tried to minimize packet sizes due to slow radio.
 
-	Plans:
-	All terminal output will be moved under VERBOSE_TERMINAL define. 
+	All terminal output will be moved under VERBOSE_TERMINAL define.
 	Only critical logic/hardware errors will be printed to terminal immediately.
 
 	From 9 October 2021 'pull in' direction should have positive current, 'pull out' negative.
 
 	From 27 April 2022 protocol changed to half duplex request->reply scheme.
-	Any command will increment alive timeout. No special command needed. Increment
-	is defined in skypuff_conf.h
-*/
+	    Any command will increment alive timeout. No special command needed. Increment
+	    is defined in skypuff_conf.h
+
+    Since 16 September 2020 messages with COMM_PRINT byte cannot be sent when binary command was received.
+        Instead, errors are being saved to reply_buf and sent with SK_COMM_MSG byte with subsequent stats response.
+        To distinguish those cases we use main_loop_command_from_terminal variable which is true by the time of launch.
+        With the first COMM_CUSTOM_APP_DATA request this variable becomes equal to false till the application shutdown.
+    TODO: Replace SK_COMM_MSG with shorter binary commands to decrease maximum reply_buf_size. This can
+        reduce commands lag from radio when waiting long alive response (around 221 bytes).
+
+ */
 
 const int short_print_delay = 500; // 0.5s, measured in control loop counts
 const int long_print_delay = 3000;
@@ -88,7 +95,7 @@ static void terminal_set_example_conf(int argc, const char **argv);
 static void terminal_alive_forever(int argc, const char **argv);
 static void terminal_set_state(int argc, const char **argv);
 static void terminal_set_pull_force(int argc, const char **argv);
-static void terminal_adc2_tick(int argc, const char **argv);
+static void terminal_cut_the_line(int argc, const char **argv);
 static void terminal_measure_spool(int argc, const char **argv);
 
 #ifdef DEBUG_SMOOTH_MOTOR
@@ -127,7 +134,6 @@ static float measurement_speed_filter_period_secs =
 		(float) 50.0 / (float) 1000.0; // Period of tachometer speed measurements to overage
 
 // Buffer to collect async messages to be appended to the next stats response
-#define REPLY_BUF_SIZE (PACKET_MAX_PL_LEN - 200) // 200 bytes for stats packet in the begining
 uint8_t reply_buf[REPLY_BUF_SIZE];
 size_t reply_buf_len = 0;
 
@@ -173,9 +179,10 @@ typedef enum {
 	SEND_POWER_STATS,
 	SEND_TEMP_STATS,
 	SET_SMOOTH,
-} skypuff_terminal_command;
+} skypuff_main_loop_command;
 
-static volatile skypuff_terminal_command terminal_command;
+static volatile skypuff_main_loop_command main_loop_command;
+static bool main_loop_command_from_terminal;
 
 // Smooth force apply and release
 typedef struct {
@@ -289,7 +296,6 @@ static const skypuff_config max_config = {
 
 inline static void append_to_reply_buf(const uint8_t *src, size_t count) {
 	if (reply_buf_len + count > REPLY_BUF_SIZE) {
-		commands_printf("-- ALARMA!!! -- reply buffer capacity exceeded");
 		return;
 	}
 	memcpy(reply_buf + reply_buf_len, src, count);
@@ -462,6 +468,29 @@ inline static float smooth_calc_step(const float c1,
 	return c;
 }
 
+static void save_custom_msg(const char *format, ...) {
+    // Add first 2 bytes as extra buffer size and last zero byte for C string
+    static u_char custom_msg_buf[UCHAR_MAX + 3];
+
+    va_list args;
+    va_start(args, format);
+    // Skip first 2 bytes for future use
+    int32_t printed = vsnprintf((char *) (custom_msg_buf + 2), UCHAR_MAX, format, args);
+    va_end(args);
+    if (printed == -1) {
+        commands_printf("%s: vsnprintf error format %s", state_str(state), format);
+        return;
+    }
+
+    if (main_loop_command_from_terminal) {
+        commands_printf("%s", custom_msg_buf + 2);
+    } else {
+        custom_msg_buf[0] = SK_COMM_MSG;
+        custom_msg_buf[1] = (u_char) printed;
+        append_to_reply_buf(custom_msg_buf, printed + 2);
+    }
+}
+
 // Process all posible motor mode transitions
 inline static void smooth_motor_adjustment(const int cur_tac, const int abs_tac) {
 	int prev_adjustment_delay = smooth_motor_prev_adjustment_delay();
@@ -485,7 +514,7 @@ inline static void smooth_motor_adjustment(const int cur_tac, const int abs_tac)
 			// Braking and slowing zone always instant
 			if (abs_tac <= config.braking_length + config.slowing_length) {
 #ifdef DEBUG_SMOOTH_MOTOR
-				commands_printf("%s: loop %d, -- braking/slowing zone detected", state_str(state), loop_step);
+				save_custom_msg("%s: loop %d, -- braking/slowing zone detected", state_str(state), loop_step);
 #endif
 				smooth_motor_instant_brake();
 				return;
@@ -578,7 +607,7 @@ inline static void smooth_motor_adjustment(const int cur_tac, const int abs_tac)
 			break;
 
 		default:
-			commands_printf("%s: -- Wrong smooth motor adjustment target mode: '%s'",
+			save_custom_msg("%s: -- Wrong smooth motor adjustment target mode: '%s'",
 							state_str(state), motor_mode_str(target_motor_state.mode));
 			next_smooth_motor_adjustment = INT_MAX;
 			return;
@@ -645,17 +674,24 @@ inline static void smooth_motor_current(const int cur_tac, const int abs_tac, co
 
 // Helper functions to check limits
 inline static void save_out_of_limits_error(const char *format, ...) {
-	static const int out_of_limits_max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
-	static uint8_t out_of_limits_buf[PACKET_MAX_PL_LEN - 1];
+    // Add first 2 bytes as extra buffer size and last zero byte for C string
+    static u_char out_of_limits_buf[UCHAR_MAX + 3];
 
 	va_list args;
 	va_start(args, format);
-	int32_t printed = vsnprintf((char *) (out_of_limits_buf + 2), out_of_limits_max_buf_size - 1, format, args);
+	// Skip first 2 bytes for future use
+	int32_t printed = vsnprintf((char *) (out_of_limits_buf + 2), UCHAR_MAX, format, args);
 	va_end(args);
-	out_of_limits_buf[0] = SK_COMM_OUT_OF_LIMITS;
-	out_of_limits_buf[1] = printed; // save message length to buffer
 
-	append_to_reply_buf(out_of_limits_buf, 1 + 1 + printed);
+	if (printed == -1) {
+        commands_printf("%s: vsnprintf error format %s", state_str(state), format);
+        return;
+	}
+
+	out_of_limits_buf[0] = SK_COMM_OUT_OF_LIMITS;
+	out_of_limits_buf[1] = (u_char) printed; // save message length to buffer
+
+	append_to_reply_buf(out_of_limits_buf, 2 + printed);
 
 #ifdef VERBOSE_TERMINAL
 	commands_printf("%s: %s %s", state_str(state), limits_wrn, (char *)(out_of_limits_buf + ind));
@@ -855,23 +891,6 @@ inline static void save_force_is_set(void) {
 	buffer[ind++] = SK_COMM_FORCE_IS_SET;
 	buffer_append_float16(buffer, config.pull_current, 1e1, &ind);
 	buffer_append_float16(buffer, amps_per_sec, 1e1, &ind);
-
-	append_to_reply_buf(buffer, ind);
-}
-
-// Used to debug antisex first time
-inline static void save_custom_msg(const char *msg) {
-	const int max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
-	uint8_t buffer[max_buf_size];
-	int32_t ind = 0;
-
-	buffer[ind++] = SK_COMM_MSG;
-	int msg_len = strlen(msg);
-	buffer[ind++] = msg_len;
-	if (max_buf_size - 1 >= msg_len) {
-		memcpy(buffer + ind, msg, msg_len);
-		ind += msg_len;
-	}
 
 	append_to_reply_buf(buffer, ind);
 }
@@ -1215,8 +1234,9 @@ inline static void save_fault_to_reply_buf(const mc_fault_code f) {
 	append_to_reply_buf(buffer, 2);
 }
 
-// Send motor mode, speed and current amps as reply to stats command
-inline static void send_stats(const int cur_tac, bool add_temps) {
+// Send state, speed and current amps as reply.
+// We have to send short fixed length answer after state change requests (use_reply_buf = false)
+inline static void send_stats(const int cur_tac, bool add_temps, bool use_reply_buf) {
 	const int max_buf_size = PACKET_MAX_PL_LEN - 1; // 1 byte for COMM_CUSTOM_APP_DATA
 	uint8_t buffer[max_buf_size];
 	int32_t ind = 0;
@@ -1236,7 +1256,7 @@ inline static void send_stats(const int cur_tac, bool add_temps) {
 	}
 
 	// Let's add additional messages. For example status changes.
-	if (reply_buf_len > 0) {
+	if (use_reply_buf && reply_buf_len > 0) {
 		memcpy(buffer + ind, reply_buf, reply_buf_len);
 		ind += reply_buf_len;
 		reply_buf_len = 0;
@@ -1263,6 +1283,8 @@ void custom_app_data_handler(unsigned char *data, unsigned int len) {
 		return;
 	}
 
+	main_loop_command_from_terminal = false; // Now we work in binary mode
+
 	skypuff_custom_app_data_command command;
 
 	int32_t ind = 0;
@@ -1271,11 +1293,11 @@ void custom_app_data_handler(unsigned char *data, unsigned int len) {
 	switch (command) {
 		case SK_COMM_POWER_STATS:
 			increment_alive_until();
-			terminal_command = SEND_POWER_STATS;
+            main_loop_command = SEND_POWER_STATS;
 			break;
 		case SK_COMM_TEMP_STATS:
 			increment_alive_until();
-			terminal_command = SEND_TEMP_STATS;
+            main_loop_command = SEND_TEMP_STATS;
 			break;
 		case SK_COMM_SETTINGS_V1:
 			// Note that deserialize_scales is not called here.
@@ -1285,11 +1307,11 @@ void custom_app_data_handler(unsigned char *data, unsigned int len) {
 			if (!deserialize_config(data, len, &set_config, &ind))
 				return;
 
-			terminal_command = SET_CONF;
+            main_loop_command = SET_CONF;
 			break;
 		case SK_COMM_GUILLOTINE:
 			// Cut the rope!
-			terminal_adc2_tick(0, 0);
+             terminal_cut_the_line(0, 0);
 			break;
 		default:
 			commands_printf("%s: -- Can't deserialize command -- Unknown command '%d'.",
@@ -1395,7 +1417,8 @@ void app_custom_start(void) {
 	prev_abs_tac = 0;
 	prev_erpm = 0;
 	v_in_filtered = GET_INPUT_VOLTAGE();
-	terminal_command = DO_NOTHING;
+    main_loop_command = DO_NOTHING;
+    main_loop_command_from_terminal = true; // Assume we work from terminal by default
 	stop_now = false;
 
 	smooth_motor_release();
@@ -1449,10 +1472,10 @@ void app_custom_start(void) {
 			"force",
 			"Set SkyPUFF pull force",
 			"[kg]", terminal_set_pull_force);
-	terminal_register_command_callback(
-			"adc2_tick",
-			"Cut the rope with guillotine",
-			"", terminal_adc2_tick);
+    terminal_register_command_callback(
+            "adc2_tick",
+            "Cut the rope with guillotine",
+            "", terminal_cut_the_line);
 	terminal_register_command_callback(
 			"measure_spool",
 			"Measure spool virtual mass spinning motor backward and forward with specified force during specified time and measurments with specified interval",
@@ -1555,7 +1578,7 @@ inline static bool is_filtered_speed_too_low(const float cur_erpm) {
 	// Takes about 500 iterations if speed is about zero to reach filtered 0.1
 	if (fabs(erpm_filtered) < (double) 0.1) {
 		save_command_only(SK_COMM_TOO_SLOW_SPEED_UP);
-		commands_printf("%s: -- Too slow speed up", state_str(state));
+		save_custom_msg("%s: -- Too slow speed up", state_str(state));
 		return true;
 	}
 
@@ -2124,9 +2147,9 @@ inline static void print_conf(const int cur_tac) {
 
 inline static void process_terminal_commands(int *cur_tac, int *abs_tac) {
 	// In case of new command during next switch
-	skypuff_terminal_command prev_command = terminal_command;
+	skypuff_main_loop_command prev_command = main_loop_command;
 
-	switch (terminal_command) {
+	switch (main_loop_command) {
 		case DO_NOTHING:
 			return;
 
@@ -2153,23 +2176,21 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac) {
 					break;
 
 				default:
-					commands_printf("%s: -- Can't set zero -- Only possible from UNINITIALIZED or BRAKING states",
-									state_str(state));
+                    save_custom_msg("Can't set zero. Only possible from UNINITIALIZED or BRAKING states");
 					break;
 			}
 			break;
 		case SET_MANUAL_BRAKING:
 			switch (state) {
 				case UNINITIALIZED:
-					commands_printf("%s: -- Can't switch to MANUAL_BRAKING -- Not possible from UNINIITIALIZED",
-									state_str(state));
+                    save_custom_msg("Can't switch to MANUAL_BRAKING. Not possible from UNINIITIALIZED");
 					break;
 				default:
 					manual_brake(*cur_tac);
 					break;
 			}
 			increment_alive_until();
-			send_stats(*cur_tac, false);
+			send_stats(*cur_tac, false, false);
 			break;
 		case SET_MANUAL_SLOW:
 			switch (state) {
@@ -2177,12 +2198,11 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac) {
 					manual_slow_speed_up(*cur_tac);
 					break;
 				default:
-					commands_printf("%s: -- Can't switch to MANUAL_SLOW -- Only possible from MANUAL_BRAKING",
-									state_str(state));
+                    save_custom_msg("Can't switch to MANUAL_SLOW. Only possible from MANUAL_BRAKING");
 					break;
 			}
 			increment_alive_until();
-			send_stats(*cur_tac, false);
+			send_stats(*cur_tac, false, false);
 			break;
 		case SET_MANUAL_SLOW_BACK:
 			switch (state) {
@@ -2190,18 +2210,16 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac) {
 					manual_slow_back_speed_up(*cur_tac);
 					break;
 				default:
-					commands_printf("%s: -- Can't switch to MANUAL_SLOW_BACK -- Only possible from MANUAL_BRAKING",
-									state_str(state));
+                    save_custom_msg("Can't switch to MANUAL_SLOW_BACK. Only possible from MANUAL_BRAKING");
 					break;
 			}
 			increment_alive_until();
-			send_stats(*cur_tac, false);
+			send_stats(*cur_tac, false, false);
 			break;
 		case SET_UNWINDING:
 			// Just warning for terminal mode
 			if (!is_alive()) {
-				commands_printf("%s: -- Can't switch to UNWINDING -- alive timeout",
-								state_str(state));
+                save_custom_msg("Can't switch to UNWINDING. Alive timeout");
 				break;
 			}
 
@@ -2214,21 +2232,18 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac) {
 				case PULL:
 				case FAST_PULL:
 					if (*cur_tac > config.braking_length) {
-						commands_printf("%s: -- Can't switch to UNWINDING -- Positive tachometer value",
-										state_str(state));
+                        save_custom_msg("Can't switch to UNWINDING. Positive tachometer value");
 						break;
 					}
 					unwinding(*cur_tac);
 					break;
 
 				default:
-					commands_printf(
-							"%s: -- Can't switch to UNWINDING -- Only possible from BRAKING_EXTENSION, MANUAL_BRAKING, PRE_PULL, TAKEOFF_PULL, PULL, FAST_PULL",
-							state_str(state));
+                    save_custom_msg("Can't switch to UNWINDING. Only possible from BRAKING_EXTENSION, MANUAL_BRAKING, PRE_PULL, TAKEOFF_PULL, PULL, FAST_PULL");
 					break;
 			}
 			increment_alive_until();
-			send_stats(*cur_tac, false);
+			send_stats(*cur_tac, false, false);
 			break;
 		case SET_BRAKING_EXTENSION:
 			switch (state) {
@@ -2239,19 +2254,17 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac) {
 					break;
 
 				default:
-					commands_printf(
-							"%s: -- Can't switch to BRAKING_EXTENSION -- Only possible from UNWINDING, REWINDING or MANUAL_BRAKING",
-							state_str(state));
+                    save_custom_msg("Can't switch to BRAKING_EXTENSION. Only possible from UNWINDING, REWINDING or MANUAL_BRAKING");
 					break;
 			}
 
 			increment_alive_until();
-			send_stats(*cur_tac, false);
+			send_stats(*cur_tac, false, false);
 			break;
 		case SET_PULL_FORCE:
 			// We need correct config.amps_per_kg and drive settings
 			if (state == UNINITIALIZED) {
-				commands_printf("%s: -- Can't update pull force from UNINITIALIZED", state_str(state));
+                save_custom_msg("Can't update pull force from UNINITIALIZED");
 				break;
 			}
 
@@ -2290,7 +2303,7 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac) {
 				default:
 					break;
 			}
-            send_stats(*cur_tac, false);
+            send_stats(*cur_tac, false, false);
 			break;
 		case SET_PRE_PULL:
 			switch (state) {
@@ -2298,40 +2311,35 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac) {
 				case UNWINDING:
 				case REWINDING:
 					if (*cur_tac > config.braking_length) {
-						commands_printf("%s: -- Can't switch to PRE_PULL -- Positive tachometer value",
-										state_str(state));
+                        save_custom_msg("Can't switch to PRE_PULL. Positive tachometer value");
 						break;
 					}
 					pre_pull(*cur_tac);
 					break;
 				default:
-					commands_printf(
-							"%s: -- Can't switch to PRE_PULL -- Only possible from BRAKING_EXTENSION, UNWINDING or REWINDING",
-							state_str(state));
+                    save_custom_msg("Can't switch to PRE_PULL. Only possible from BRAKING_EXTENSION, UNWINDING or REWINDING");
 					break;
 			}
 			increment_alive_until();
-			send_stats(*cur_tac, false);
+			send_stats(*cur_tac, false, false);
 			break;
 		case SET_TAKEOFF_PULL:
 			switch (state) {
 				case UNWINDING:
 				case PRE_PULL:
 					if (*cur_tac > config.braking_length) {
-						commands_printf("%s: -- Can't switch to TAKEOFF_PULL -- Positive tachometer value",
-										state_str(state));
+                        save_custom_msg("Can't switch to TAKEOFF_PULL. Positive tachometer value");
 						break;
 					}
 					takeoff_pull(*cur_tac);
 					break;
 
 				default:
-					commands_printf("%s: -- Can't switch to TAKEOFF_PULL -- Only possible from UNWINDING, PRE_PULL",
-									state_str(state));
+                    save_custom_msg("Can't switch to TAKEOFF_PULL. Only possible from UNWINDING, PRE_PULL");
 					break;
 			}
 			increment_alive_until();
-			send_stats(*cur_tac, false);
+			send_stats(*cur_tac, false, false);
 			break;
 		case SET_PULL:
 			switch (state) {
@@ -2340,39 +2348,35 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac) {
 				case UNWINDING:
 				case REWINDING:
 					if (*cur_tac > config.braking_length) {
-						commands_printf("%s: -- Can't switch to PULL -- Positive tachometer value",
-										state_str(state));
+                        save_custom_msg("Can't switch to PULL. Positive tachometer value");
 						break;
 					}
 					pull(*cur_tac);
 					break;
 
 				default:
-					commands_printf(
-							"%s: -- Can't switch to PULL -- Only possible from BRAKING_EXTENSION, TAKEOFF_PULL, UNWINDING or REWINDING",
-							state_str(state));
+                    save_custom_msg("Can't switch to PULL. Only possible from BRAKING_EXTENSION, TAKEOFF_PULL, UNWINDING or REWINDING");
 			}
 			increment_alive_until();
-			send_stats(*cur_tac, false);
+			send_stats(*cur_tac, false, false);
 			break;
 		case SET_FAST_PULL:
 			switch (state) {
 				case UNWINDING:
 				case PULL:
 					if (*cur_tac > config.braking_length) {
-						commands_printf("%s: -- Can't switch to FAST_PULL -- Positive tachometer value",
-										state_str(state));
+                        save_custom_msg("Can't switch to FAST_PULL. Positive tachometer value");
 						break;
 					}
 					fast_pull(*cur_tac);
 					break;
 
 				default:
-					commands_printf("%s: -- Can't switch to FAST_PULL -- Only possible from UNWINDING, PULL", state_str(state));
+                    save_custom_msg("Can't switch to FAST_PULL. Only possible from UNWINDING, PULL");
 					break;
 			}
 			increment_alive_until();
-			send_stats(*cur_tac, false);
+			send_stats(*cur_tac, false, false);
 			break;
 		case PRINT_CONF:
 			print_conf(*cur_tac);
@@ -2383,11 +2387,11 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac) {
 
 			break;
 		case SEND_POWER_STATS:
-			send_stats(*cur_tac, false);
+			send_stats(*cur_tac, false, true);
 
 			break;
 		case SEND_TEMP_STATS:
-			send_stats(*cur_tac, true);
+			send_stats(*cur_tac, true, true);
 
 			break;
 		case SET_CONF:
@@ -2445,7 +2449,7 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac) {
 
 					save_command_only(SK_COMM_SETTINGS_APPLIED);
 #ifdef VERBOSE_TERMINAL
-					commands_printf("%s: -- Settings are set -- Have a nice puffs!", state_str(state));
+                    save_custom_msg("Settings are set. Have a nice puffs!");
 #endif
 					// Announce new settings
 					send_conf();
@@ -2462,9 +2466,7 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac) {
 
 					break;
 				default:
-					commands_printf(
-							"%s: -- Can't set configuration -- Only possible from UNINITIALIZED or any BRAKING states",
-							state_str(state));
+                    save_custom_msg("Can't set configuration. Only possible from UNINITIALIZED or any BRAKING states");
 			}
 
 			break;
@@ -2491,13 +2493,13 @@ inline static void process_terminal_commands(int *cur_tac, int *abs_tac) {
 
 			break;
 		default:
-			commands_printf("SkyPUFF: unknown terminal command, exiting!");
+            save_custom_msg("SkyPUFF: unknown terminal command, exiting!");
 			stop_now = true;
 	}
 
 	// Nothing changed during switch?
-	if (prev_command == terminal_command)
-		terminal_command = DO_NOTHING;
+	if (prev_command == main_loop_command)
+        main_loop_command = DO_NOTHING;
 }
 
 static inline void antisex_adjustment(void) {
@@ -2612,21 +2614,21 @@ static void terminal_set_zero(int argc, const char **argv) {
 	(void) argc;
 	(void) argv;
 
-	terminal_command = SET_ZERO;
+    main_loop_command = SET_ZERO;
 }
 
 static void terminal_print_conf(int argc, const char **argv) {
 	(void) argc;
 	(void) argv;
 
-	terminal_command = PRINT_CONF;
+    main_loop_command = PRINT_CONF;
 }
 
 static void terminal_get_conf(int argc, const char **argv) {
 	(void) argc;
 	(void) argv;
 
-	terminal_command = SEND_CONF;
+    main_loop_command = SEND_CONF;
 }
 
 static void terminal_set_example_conf(int argc, const char **argv) {
@@ -2635,7 +2637,7 @@ static void terminal_set_example_conf(int argc, const char **argv) {
 
 	set_example_drive(&set_drive);
 	set_example_conf(&set_config);
-	terminal_command = SET_CONF;
+    main_loop_command = SET_CONF;
 }
 
 static void terminal_alive_forever(int argc, const char **argv) {
@@ -2659,7 +2661,7 @@ static void terminal_set_pull_force(int argc, const char **argv) {
 
 	// Limits will be checked in process_terminal_commands()
 	terminal_pull_kg = kg;
-	terminal_command = SET_PULL_FORCE;
+    main_loop_command = SET_PULL_FORCE;
 }
 
 // Helper function to uppercase terminal commands
@@ -2689,31 +2691,31 @@ static void terminal_set_state(int argc, const char **argv) {
 	uppercase(up, argv[1], up_len);
 
 	if (!strcmp(up, "UNWINDING")) {
-		terminal_command = SET_UNWINDING;
+        main_loop_command = SET_UNWINDING;
 		return;
 	} else if (!strcmp(up, "MANUAL_BRAKING")) {
-		terminal_command = SET_MANUAL_BRAKING;
+        main_loop_command = SET_MANUAL_BRAKING;
 		return;
 	} else if (!strcmp(up, "BRAKING_EXTENSION")) {
-		terminal_command = SET_BRAKING_EXTENSION;
+        main_loop_command = SET_BRAKING_EXTENSION;
 		return;
 	} else if (!strcmp(up, "MANUAL_SLOW")) {
-		terminal_command = SET_MANUAL_SLOW;
+        main_loop_command = SET_MANUAL_SLOW;
 		return;
 	} else if (!strcmp(up, "MANUAL_SLOW_BACK")) {
-		terminal_command = SET_MANUAL_SLOW_BACK;
+        main_loop_command = SET_MANUAL_SLOW_BACK;
 		return;
 	} else if (!strcmp(up, "PRE_PULL")) {
-		terminal_command = SET_PRE_PULL;
+        main_loop_command = SET_PRE_PULL;
 		return;
 	} else if (!strcmp(up, "TAKEOFF_PULL")) {
-		terminal_command = SET_TAKEOFF_PULL;
+        main_loop_command = SET_TAKEOFF_PULL;
 		return;
 	} else if (!strcmp(up, "PULL")) {
-		terminal_command = SET_PULL;
+        main_loop_command = SET_PULL;
 		return;
 	} else if (!strcmp(up, "FAST_PULL")) {
-		terminal_command = SET_FAST_PULL;
+        main_loop_command = SET_FAST_PULL;
 		return;
 	} else {
 		commands_printf("%s: -- 'set %s' not implemented",
@@ -2737,7 +2739,7 @@ static void terminal_smooth(int argc, const char **argv)
 
 	if (!strcmp(up, "RELEASE"))
 	{
-		terminal_command = SET_SMOOTH;
+		main_loop_command = SET_SMOOTH;
 		terminal_motor_state.mode = MOTOR_RELEASED;
 		terminal_motor_state.param.current = 0;
 		return;
@@ -2757,7 +2759,7 @@ static void terminal_smooth(int argc, const char **argv)
 							state_str(state), argv[2]);
 			return;
 		};
-		terminal_command = SET_SMOOTH;
+		main_loop_command = SET_SMOOTH;
 		terminal_motor_state.mode = MOTOR_BRAKING;
 		terminal_motor_state.param.current = current;
 		return;
@@ -2777,7 +2779,7 @@ static void terminal_smooth(int argc, const char **argv)
 							state_str(state), argv[2]);
 			return;
 		};
-		terminal_command = SET_SMOOTH;
+		main_loop_command = SET_SMOOTH;
 		terminal_motor_state.mode = MOTOR_CURRENT;
 		terminal_motor_state.param.current = current;
 		return;
@@ -2797,7 +2799,7 @@ static void terminal_smooth(int argc, const char **argv)
 							state_str(state), argv[2]);
 			return;
 		};
-		terminal_command = SET_SMOOTH;
+		main_loop_command = SET_SMOOTH;
 		terminal_motor_state.mode = MOTOR_SPEED;
 		terminal_motor_state.param.erpm = erpm;
 		return;
@@ -2810,7 +2812,7 @@ static void terminal_smooth(int argc, const char **argv)
 }
 #endif
 
-void terminal_adc2_tick(int argc, const char **argv) {
+void terminal_cut_the_line(int argc, const char **argv) {
 	(void) argc;
 	(void) argv;
 
@@ -2916,7 +2918,7 @@ void terminal_measure_spool(int argc, const char **argv) {
 	float amps = kg * config.amps_per_kg;
 
 	// Release motor
-	terminal_command = SET_SMOOTH;
+	main_loop_command = SET_SMOOTH;
 	terminal_motor_state.mode = MOTOR_RELEASED;
 	terminal_motor_state.param.current = 0;
 
@@ -2943,7 +2945,7 @@ void terminal_measure_spool(int argc, const char **argv) {
 	systime_t started = chVTGetSystemTime();
 
 	if (use_smooth) {
-		terminal_command = SET_SMOOTH;
+        main_loop_command = SET_SMOOTH;
 		terminal_motor_state.mode = MOTOR_CURRENT;
 		terminal_motor_state.param.current = amps;
 
@@ -2953,7 +2955,7 @@ void terminal_measure_spool(int argc, const char **argv) {
 	draw_spool_mass_graph(started, secs * 1000, kg);
 
 	if (use_smooth) {
-		terminal_command = SET_SMOOTH;
+        main_loop_command = SET_SMOOTH;
 		terminal_motor_state.mode = MOTOR_CURRENT;
 		terminal_motor_state.param.current = -amps;
 
@@ -2965,7 +2967,7 @@ void terminal_measure_spool(int argc, const char **argv) {
 	mc_interface_release_motor();
 
 	// Setting MANUAL_BRACKING safe state
-	terminal_command = SET_MANUAL_BRAKING;
+	main_loop_command = SET_MANUAL_BRAKING;
 	chThdSleepMilliseconds(5);
 	commands_printf("%s: -- Measure done! Checkout graphs in 'Realtime Data' - 'Experiment'", state_str(state));
 
