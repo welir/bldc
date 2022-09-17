@@ -22,6 +22,8 @@
 #include <stdint.h>
 #include "datatypes.h"
 
+#define REPLY_BUF_SIZE 200
+
 /* --- This is common file for MCU and Skypuff UI apps --- */
 
 // Do not forget to add next settings version command on skypuff_config struct update
