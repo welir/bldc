@@ -31,6 +31,9 @@
 #include "extensions/string_extensions.h"
 #include "extensions/math_extensions.h"
 
+#include "lbm_custom_type.h"
+#include "lbm_channel.h"
+
 #define EVAL_CPS_STACK_SIZE 256
 #define GC_STACK_SIZE 256
 #define PRINT_STACK_SIZE 256
@@ -49,8 +52,11 @@ static volatile bool allow_print = true;
 struct termios old_termios;
 struct termios new_termios;
 
-static lbm_tokenizer_string_state_t string_tok_state;
-static lbm_tokenizer_char_stream_t string_tok;
+/* static lbm_tokenizer_string_state_t string_tok_state; */
+/* static lbm_tokenizer_char_stream_t string_tok; */
+
+static lbm_char_channel_t string_tok;
+static lbm_string_channel_state_t string_tok_state;
 
 pthread_mutex_t mut;
 
@@ -143,8 +149,8 @@ void erase() {
   fflush(stdout);
 }
 
-int inputline(char *buffer, unsigned int size) {
-  unsigned int n = 0;
+int inputline(char *buffer, int size) {
+  int n = 0;
   int c;
   for (n = 0; n < size - 1; n++) {
 
@@ -202,10 +208,9 @@ void done_callback(eval_context_t *ctx) {
   erase();
   char output[1024];
 
-  lbm_cid cid = ctx->id;
   lbm_value t = ctx->r;
 
-  int print_ret = lbm_print_value(output, 1024, t);
+  lbm_print_value(output, 1024, t);
 
   printf("> %s\n", output);
 
@@ -231,9 +236,10 @@ int error_print(const char *format, ...) {
   erase();
   va_list args;
   va_start (args, format);
-  vprintf(format, args);
+  int n = vprintf(format, args);
   va_end(args);
   new_prompt();
+  return n;
 }
 
 uint32_t timestamp_callback() {
@@ -257,19 +263,8 @@ bool dyn_load(const char *str, const char **code) {
   if (strlen(str) == 5 && strncmp(str, "defun", 5) == 0) {
     *code = "(define defun (macro (name args body) `(define ,name (lambda ,args ,body))))";
     res = true;
-  } else if (strlen(str) == 7 && strncmp(str, "reverse", 7) == 0) {
-    *code = "(define reverse (lambda (xs)"
-            "(let ((revacc (lambda (acc xs)"
-	    "(if (eq nil xs) acc"
-	    "(revacc (cons (car xs) acc) (cdr xs))))))"
-            "(revacc nil xs))))";
-    res = true;
   } else if (strlen(str) == 4 && strncmp(str, "iota", 4) == 0) {
-    *code = "(define iota (lambda (n)"
-            "(let ((iacc (lambda (acc i)"
-            "(if (< i 0) acc"
-            "(iacc (cons i acc) (- i 1))))))"
-            "(iacc nil (- n 1)))))";
+    *code = "(define iota (lambda (n) (range 0 n)))";
     res = true;
   } else if (strlen(str) == 6 && strncmp(str, "length", 6) == 0) {
     *code = "(define length (lambda (xs)"
@@ -296,11 +291,6 @@ bool dyn_load(const char *str, const char **code) {
 	    "(if (eq xs nil) nil"
 	    "(if (eq ys nil) nil"
             "(cons (cons (car xs) (car ys)) (zip (cdr xs) (cdr ys)))))))";
-    res = true;
-  } else if (strlen(str) == 3 && strncmp(str, "map", 3) == 0) {
-    *code = "(define map (lambda (f xs)"
-	    "(if (eq xs nil) nil"
-            "(cons (f (car xs)) (map f (cdr xs))))))";
     res = true;
   } else if (strlen(str) == 6 && strncmp(str, "lookup", 6) == 0) {
     *code = "(define lookup (lambda (x xs)"
@@ -387,6 +377,21 @@ static lbm_value ext_range(lbm_value *args, lbm_uint argn) {
         return res;
 }
 
+static bool test_destruct(lbm_uint value) {
+  printf("destroying custom value\n");
+  free((lbm_uint*)value);
+  return true;
+}
+
+static lbm_value ext_custom(lbm_value *args, lbm_uint argn) {
+
+  lbm_uint *mem = (lbm_uint*)malloc(1000*sizeof(lbm_uint));
+
+  lbm_value res;
+
+  lbm_custom_type_create((lbm_uint)mem, test_destruct, "custom_type", &res);
+  return res;
+}
 
 
 /* load a file, caller is responsible for freeing the returned string */
@@ -457,6 +462,21 @@ void ctx_exists(eval_context_t *ctx, void *arg1, void *arg2) {
   }
 }
 
+void lookup_local(eval_context_t *ctx, void *arg1, void *arg2) {
+
+
+  char output[1024];
+  lbm_value res;
+  if (lbm_env_lookup_b(&res, (lbm_value)arg1, ctx->curr_env)) {
+
+    lbm_print_value(output, 1024, res);
+    printf("CTX %d: %s = %s\n", ctx->id, (char *)arg2, output);
+  } else {
+    printf("not found\n");
+  }
+  
+}
+
 
 void sym_it(const char *str) {
   printf("%s\n", str);
@@ -470,7 +490,6 @@ lbm_uint word_array[1024];
 
 
 int main(int argc, char **argv) {
-  unsigned int len = 1024;
   int res = 0;
 
   pthread_t lispbm_thd;
@@ -478,7 +497,7 @@ int main(int argc, char **argv) {
   pthread_mutex_init(&mut, NULL);
 
   lbm_heap_state_t heap_state;
-  unsigned int heap_size = 2048;
+  unsigned int heap_size = 8192;
   lbm_cons_t *heap_storage = NULL;
 
   for (int i = 0; i < 1024; i ++) {
@@ -548,6 +567,12 @@ int main(int argc, char **argv) {
   else
     printf("Error adding extension.\n");
 
+  res = lbm_add_extension("custom", ext_custom);
+  if (res)
+    printf("Extension added.\n");
+  else
+    printf("Error adding extension.\n");
+
 
   /* Start evaluator thread */
   if (pthread_create(&lispbm_thd, NULL, eval_thd_wrapper, NULL)) {
@@ -612,12 +637,15 @@ int main(int argc, char **argv) {
       char *file_str = load_file(&str[5]);
       if (file_str) {
 
-        lbm_create_char_stream_from_string(&string_tok_state,
-                                              &string_tok,
-                                              file_str);
+        /* lbm_create_char_stream_from_string(&string_tok_state, */
+        /*                                       &string_tok, */
+        /*                                       file_str); */
+        lbm_create_string_char_channel(&string_tok_state,
+                                       &string_tok,
+                                       file_str);
 
         /* Get exclusive access to the heap */
-        lbm_pause_eval();
+        lbm_pause_eval_with_gc(50);
         while(lbm_get_eval_state() != EVAL_CPS_STATE_PAUSED) {
           sleep_callback(10);
         }
@@ -649,6 +677,8 @@ int main(int argc, char **argv) {
       lbm_running_iterator(print_ctx_info, NULL, NULL);
       printf("****** Blocked contexts ******\n");
       lbm_blocked_iterator(print_ctx_info, NULL, NULL);
+      printf("****** Sleeping contexts *****\n");
+      lbm_sleeping_iterator(print_ctx_info, NULL, NULL);
       printf("****** Done contexts ******\n");
       lbm_done_iterator(print_ctx_info, NULL, NULL);
       free(str);
@@ -676,7 +706,7 @@ int main(int argc, char **argv) {
     } else if (strncmp(str, ":heap", 5) == 0) {
       int size = atoi(str + 5);
       if (size > 0) {
-        heap_size = size;
+        heap_size = (unsigned int)size;
 
         free(heap_storage);
         heap_storage = (lbm_cons_t*)malloc(sizeof(lbm_cons_t) * heap_size);
@@ -763,7 +793,7 @@ int main(int argc, char **argv) {
       int i_val;
 
       if (sscanf(str + 5, "%d%d", &id, &i_val) == 2) {
-        lbm_pause_eval();
+        lbm_pause_eval_with_gc(50);
         while(lbm_get_eval_state() != EVAL_CPS_STATE_PAUSED) {
           sleep_callback(10);
         }
@@ -787,14 +817,23 @@ int main(int argc, char **argv) {
     } else if (strncmp(str, ":continue", 9) == 0) {
       lbm_continue_eval();
       free(str);
-    } else if (strncmp(str, ":step", 5) == 0) {
+    } else if (strncmp(str, ":inspect", 8) == 0) {
 
-      int num = atoi(str + 5);
-
-      lbm_step_n_eval((uint32_t)num);
-      free(str);
+      int i = 8;
+      if (strlen(str) >= 8) {
+	while (str[i] == ' ') i++;
+      }
+      char *sym = str + i;
+      lbm_uint sym_id = 0;
+      if (lbm_get_symbol_by_name(sym, &sym_id)) {
+	lbm_running_iterator(lookup_local, (void*)lbm_enc_sym(sym_id), (void*)sym);
+	lbm_blocked_iterator(lookup_local, (void*)lbm_enc_sym(sym_id), (void*)sym);
+			     lbm_done_iterator(lookup_local, (void*)lbm_enc_sym(sym_id), (void*)sym);
+      } else {
+	printf("symbol does not exist\n");
+      }
     } else if (strncmp(str, ":undef", 6) == 0) {
-      lbm_pause_eval();
+      lbm_pause_eval_with_gc(50);
       while(lbm_get_eval_state() != EVAL_CPS_STATE_PAUSED) {
         sleep_callback(10);
       }
@@ -806,14 +845,17 @@ int main(int argc, char **argv) {
     } else {
       /* Get exclusive access to the heap */
       read_t *r = malloc(sizeof(read_t));
-      lbm_pause_eval();
+      lbm_pause_eval_with_gc(50);
       while(lbm_get_eval_state() != EVAL_CPS_STATE_PAUSED) {
         sleep_callback(10);
       }
       //printf("loading: %s\n", str);
-      lbm_create_char_stream_from_string(&string_tok_state,
-                                         &string_tok,
-                                         str);
+      //lbm_create_char_stream_from_string(&string_tok_state,
+      //                                   &string_tok,
+      //                                   str);
+      lbm_create_string_char_channel(&string_tok_state,
+                                     &string_tok,
+                                     str);
       lbm_cid cid = lbm_load_and_eval_expression(&string_tok);
       r->str = str;
       r->cid = cid;
